@@ -73,7 +73,9 @@ class BaseAgent:
     def _batch_estimate(self, step: int, last_step: bool) -> None:
         pass
 
-    def _within_batch_update(self, obs: OaroTuple) -> None:
+    def _within_batch_update(
+        self, obs: OaroTuple, state: Optional[Tensor], state_prev: Optional[Tensor]
+    ) -> None:
         pass
 
     def _init_state(self):
@@ -90,14 +92,14 @@ class BaseAgent:
         obs_prev = self.task.reset()[0]
 
         episode_start = True
-        state = self._init_state()
+        state_prev = self._init_state()
 
         if progress_bar:
             iterator = trange(total_timesteps)
         else:
             iterator = range(total_timesteps)
         for step in iterator:
-            action, state = self.predict(obs_prev, state, episode_start)
+            action, state = self.predict(obs_prev, state_prev, episode_start)
             episode_start = False
 
             obs, rew, terminated, _, _ = self.task.step(action.item())
@@ -110,11 +112,12 @@ class BaseAgent:
                 obsp=torch.tensor(obs),
             )
 
-            self._within_batch_update(obs_tuple)
+            self._within_batch_update(obs_tuple, state, state_prev)
 
             self.cached_obs.append(obs_tuple)
 
             obs_prev = obs
+            state_prev = state
             if terminated:
                 obs_prev = self.task.reset()[0]
                 assert hasattr(obs, "shape")
@@ -215,7 +218,7 @@ class ValueIterationAgent(BaseAgent):
 
     def predict(
         self, obs: Tensor, state=None, episode_start=None, deterministic: bool = False
-    ) -> tuple[np.ndarray, None]:
+    ) -> tuple[Tensor, None]:
         if not deterministic and np.random.rand() < self.policy.epsilon:
             return np.array([np.random.randint(self.policy.n_actions)]), None
 
@@ -338,9 +341,7 @@ class ViAgentWithExploration(ValueIterationAgent):
         )
         self.alpha = alpha
 
-    def update_qvalues(self, obs: OaroTuple) -> None:
-        s, a, r, sp = self._get_sars_tuples(obs)
-
+    def update_qvalues(self, s, a, r, sp) -> None:
         self.policy.maybe_init_q_values(s)
         q_s_a = self.policy.q_values[s][a]
 
@@ -350,8 +351,15 @@ class ViAgentWithExploration(ValueIterationAgent):
         q_s_a = (1 - self.alpha) * q_s_a + self.alpha * (r + self.gamma * V_sp)
         self.policy.q_values[s][a] = q_s_a
 
-    def _within_batch_update(self, obs: OaroTuple) -> None:
-        self.update_qvalues(obs)
+    def _within_batch_update(
+        self, obs: OaroTuple, state: Optional[Tensor], state_prev: Optional[Tensor]
+    ) -> None:
+        # state and state_prev are only used by recurrent models
+        assert state is None
+        assert state_prev is None
+
+        s, a, r, sp = self._get_sars_tuples(obs)
+        self.update_qvalues(s, a, r, sp)
 
 
 class ViControlableStateInf(ViAgentWithExploration):
@@ -376,7 +384,8 @@ class ViDynaAgent(ViControlableStateInf):
 
     def _within_batch_update(self, obs: OaroTuple) -> None:
         # update the current q-value
-        self.update_qvalues(obs)
+        s, a, r, sp = self._get_sars_tuples(obs)
+        self.update_qvalues(s, a, r, sp)
 
         # dyna updates (note: this assumes a deterministic enviornment,
         # and this code differes from dyna as we are only using resampled
@@ -384,7 +393,8 @@ class ViDynaAgent(ViControlableStateInf):
         if self.cached_obs:
             for _ in range(self.k):
                 obs = choice(self.cached_obs)
-                self.update_qvalues(obs)
+                s, a, r, sp = self._get_sars_tuples(obs)
+                self.update_qvalues(s, a, r, sp)
 
 
 class RecurrentStateInf(ViAgentWithExploration):
@@ -411,7 +421,7 @@ class RecurrentStateInf(ViAgentWithExploration):
             batch_size (int): The number of samples per batch
         """
         return RecurrentStateInf.construct_dataloader_from_obs(
-            self.batch_size, self.cached_obs, self.max_sequence_len
+            batch_size, self.cached_obs, self.max_sequence_len
         )
 
     def _precalculate_states_for_batch_training(self) -> Tuple[Tensor, Tensor]:
@@ -435,7 +445,7 @@ class RecurrentStateInf(ViAgentWithExploration):
         state: Tensor,
         episode_start=None,
         deterministic: bool = False,
-    ) -> tuple[np.ndarray, None]:
+    ) -> tuple[Tensor, Tensor]:
         if not deterministic and np.random.rand() < self.policy.epsilon:
             return np.array([np.random.randint(self.policy.n_actions)]), None
 
@@ -446,4 +456,11 @@ class RecurrentStateInf(ViAgentWithExploration):
         hashed_sucessor_state = sucessor_state.dot(self.hash_vector)
 
         p = self.policy.get_distribution(hashed_sucessor_state)
-        return p.get_actions(deterministic=deterministic), sucessor_state
+        return p.get_actions(deterministic=deterministic), torch.tensor(sucessor_state)
+
+    def _within_batch_update(
+        self, obs: OaroTuple, state: None, state_prev: None
+    ) -> None:
+        s = state.dot(self.hash_vector)
+        sp = state_prev.dot(self.hash_vector)
+        self.update_qvalues(s, obs.a, obs.r, sp)
