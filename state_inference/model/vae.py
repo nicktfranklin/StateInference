@@ -8,6 +8,9 @@ from torch.distributions.categorical import Categorical
 from state_inference.utils.pytorch_utils import DEVICE, gumbel_softmax
 
 OPTIM_KWARGS = dict(lr=3e-4)
+VAE_BETA = 1.0
+VAE_TAU = 1.0
+VAE_GAMMA = 1.0
 
 
 class ModelBase(nn.Module):
@@ -36,7 +39,7 @@ class MLP(ModelBase):
         input_size: int,
         hidden_sizes: List[int],
         output_size: int,
-        dropout: float = 0.01,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.nin = input_size
@@ -93,10 +96,10 @@ class StateVae(ModelBase):
         encoder: ModelBase,
         decoder: ModelBase,
         z_dim: int,
-        z_layers: int = 2,
-        beta: float = 1,
-        tau: float = 1,
-        gamma: float = 1,
+        z_layers: int,
+        beta: float = VAE_BETA,
+        tau: float = VAE_TAU,
+        gamma: float = VAE_GAMMA,
     ):
         """
         Note: larger values of beta result in more independent state values
@@ -154,7 +157,6 @@ class StateVae(ModelBase):
                 x = x[None, ...]
 
             _, z = self.encode(x.to(DEVICE))
-
             state_vars = torch.argmax(z, dim=-1).detach().cpu().numpy()
         return state_vars
 
@@ -269,15 +271,14 @@ class GruEncoder(ModelBase):
         gru_kwargs = gru_kwargs if gru_kwargs is not None else dict()
         self.feature_extracter = MLP(input_size, hidden_sizes, embedding_dims, dropout)
         self.gru_cell = nn.GRUCell(embedding_dims, embedding_dims, **gru_kwargs)
-        self.hidden_encoder = nn.Linear(embedding_dims + n_actions, embedding_dims)
-        self.action_encoder = nn.Linear(n_actions, n_actions)
+        self.hidden_encoder = nn.Linear(embedding_dims, embedding_dims)
+        self.action_encoder = nn.Linear(n_actions, embedding_dims)
         self.batch_first = batch_first
         self.hidden_size = embedding_dims
         self.n_actions = n_actions
         self.nin = input_size
 
     def rnn(self, obs: Tensor, h: Tensor) -> Tensor:
-        print(obs.shape, h.shape)
         x = self.feature_extracter(obs)
         return self.gru_cell(x, h)
 
@@ -294,13 +295,13 @@ class GruEncoder(ModelBase):
         n_batch = obs.shape[1]
 
         # initialize the hidden state and action
-        h = torch.zeros(n_batch, self.hidden_size)
-        a_prev = torch.zeros(n_batch, self.n_actions)
+        h = torch.zeros(n_batch, self.hidden_size).to(DEVICE)
+        a_prev = torch.zeros(n_batch, self.hidden_size).to(DEVICE)
 
         # loop through the sequence of observations
         for o, a in zip(obs, actions):
             # encode the hidden state with the previous actions
-            h = self.hidden_encoder(torch.concat([h, a_prev], dim=1).to(DEVICE))
+            h = self.hidden_encoder(h + a_prev)
 
             # encode the action for the next step
             a_prev = self.action_encoder(a)
@@ -328,12 +329,12 @@ class RecurrentVae(StateVae):
         raise NotImplementedError
 
     def _encode_from_sequence(self, obs: Tensor, actions: Tensor) -> Tensor:
-        logits = self.encoder(obs, actions)
+        logits = self.encoder(obs, actions).view(-1, self.z_layers, self.z_dim)
         z = self.reparameterize(logits)
         return logits, z
 
     def _encode_from_state(self, obs: Tensor, h: Tensor) -> Tensor:
-        logits = self.encoder.rnn(obs, h)
+        logits = self.encoder.rnn(obs, h).view(-1, self.z_layers, self.z_dim)
         z = self.reparameterize(logits)
         return logits, z
 
@@ -346,38 +347,47 @@ class RecurrentVae(StateVae):
             hidden_state (Tensor, optional) a NxD tensor of hidden states.  If
                 no value is specified, will use a default value of zero
         """
-        raise NotImplementedError
         # hidden_state = (
         #     hidden_state
         #     if isinstance(hidden_state, Tensor)
-        #     else torch.zeros_like(obs).to(DEVICE)
+        #     else torch.zeros(ob).to(DEVICE)
         # )
 
-        # self.eval()
-        # with torch.no_grad():
-        #     # check the dimensions, expand if unbatch
+        h_dim = self.z_dim * self.z_layers
 
-        #     # expand if unbatched
-        #     assert obs.view(-1).shape[0] % self.encoder.nin == 0
-        #     print(obs.shape)
-        #     if obs.view(-1).shape[0] == self.encoder.nin:
-        #         obs = obs[None, ...]
-        #         hidden_state = hidden_state[None, ...]
+        self.eval()
+        with torch.no_grad():
+            # check the dimensions, expand if unbatch
 
-        #     state_vars = []
-        #     for o, h in zip(obs, hidden_state):
-        #         print(o, h)
-        # #         _, z = self._encode_from_state(o.to(DEVICE), h.to(DEVICE))
-        # #         state_vars.append(torch.argmax(z, dim=-1).detach().cpu().numpy())
+            # expand if unbatched
+            assert obs.view(-1).shape[0] % self.encoder.nin == 0
+            if obs.view(-1).shape[0] == self.encoder.nin:
+                obs = obs[None, ...]
+                if hidden_state is not None:
+                    hidden_state[None, ...]
 
-        # # return state_vars
+            if hidden_state is None:
+                hidden_state = torch.zeros(obs.shape[0], h_dim)
+
+            state_vars = []
+            for o, h in zip(obs, hidden_state):
+                o = o.view(-1)[None, ...].to(DEVICE)
+                h = h[None, ...].to(DEVICE)
+                assert h.ndim == 2
+                assert h.shape[1] == h_dim
+                _, z = self._encode_from_state(o, h)
+                state_vars.append(torch.argmax(z, dim=-1).detach().cpu().view(-1))
+
+        return torch.stack(state_vars).numpy()
 
     def loss(self, batch_data: List[Tensor]) -> Tensor:
         (obs, actions), _ = batch_data
         obs = obs.to(DEVICE).float()
         actions = actions.to(DEVICE).float()
 
-        logits, z = self._encode_from_sequence(obs, actions)  # this won't work
+        logits, z = self._encode_from_sequence(obs, actions)
+
+        # flatten the embedding for the input to decoder
         z = z.view(-1, self.z_layers * self.z_dim).float()
 
         # get the two components of the ELBO loss
