@@ -446,23 +446,24 @@ class RecurrentStateInf(ViAgentWithExploration):
         episode_start=None,
         deterministic: bool = False,
     ) -> tuple[Tensor, Tensor]:
-        if not deterministic and np.random.rand() < self.policy.epsilon:
-            return np.array([np.random.randint(self.policy.n_actions)]), None
-
         obs = maybe_convert_to_tensor(obs)
         obs = convert_8bit_to_float(obs)
 
-        hashed_sucessor_state = self._get_hashed_state(obs, state)
+        # e-greedy sampling
+        if not deterministic and np.random.rand() < self.policy.epsilon:
+            a = torch.tensor([np.random.randint(self.policy.n_actions)])
+        else:
+            hashed_sucessor_state = self._get_hashed_state(obs, state)
 
-        p = self.policy.get_distribution(hashed_sucessor_state)
+            p = self.policy.get_distribution(hashed_sucessor_state)
 
-        # sample the action
-        a = p.get_actions(deterministic=deterministic)
+            # sample the action
+            a = p.get_actions(deterministic=deterministic)
 
         # update the RNN Hidden state
-        state = self.state_inference_model.get_next_hidden_state(obs, state, a)
+        next_state = self.state_inference_model.get_next_hidden_state(obs, state, a)
 
-        return a, state
+        return a, next_state
 
     def _within_batch_update(
         self, obs: OaroTuple, state: None, state_prev: None

@@ -331,7 +331,7 @@ class GruEncoder(ModelBase):
         # update the hidden state with the action
         h = self.hidden_encoder(h + self.action_encoder(a))
 
-        return h
+        return h.view(-1)
 
 
 class RecurrentVae(StateVae):
