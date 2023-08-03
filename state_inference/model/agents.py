@@ -452,15 +452,36 @@ class RecurrentStateInf(ViAgentWithExploration):
         obs = maybe_convert_to_tensor(obs)
         obs = convert_8bit_to_float(obs)
 
-        sucessor_state = self.state_inference_model.get_state(obs, state)
-        hashed_sucessor_state = sucessor_state.dot(self.hash_vector)
+        hashed_sucessor_state = self._get_hashed_state(obs, state)
 
         p = self.policy.get_distribution(hashed_sucessor_state)
-        return p.get_actions(deterministic=deterministic), torch.tensor(sucessor_state)
+
+        # sample the action
+        a = p.get_actions(deterministic=deterministic)
+
+        # update the RNN Hidden state
+        state = self.state_inference_model.get_next_hidden_state(obs, state, a)
+
+        return a, state
 
     def _within_batch_update(
         self, obs: OaroTuple, state: None, state_prev: None
     ) -> None:
-        s = state.dot(self.hash_vector)
-        sp = state_prev.dot(self.hash_vector)
+        # prep the observations for the RNN
+        o = convert_8bit_to_float(obs.obs.view(1, -1)).to(DEVICE)
+        op = convert_8bit_to_float(obs.obsp.view(1, -1)).to(DEVICE)
+
+        state = state.view(1, -1).to(DEVICE)
+        state_prev = state_prev.view(1, -1).to(DEVICE)
+
+        # pass through the RNN to get the embedding
+        _, z = self.state_inference_model.encode_from_state(o, state)
+        _, zp = self.state_inference_model.encode_from_state(op, state_prev)
+
+        # convert from one hot tensor to int array
+        s = torch.argmax(z, dim=-1).detach().cpu().view(-1).numpy()
+        sp = torch.argmax(zp, dim=-1).detach().cpu().view(-1).numpy()
+
+        s = s.dot(self.hash_vector)
+        sp = sp.dot(self.hash_vector)
         self.update_qvalues(s, obs.a, obs.r, sp)

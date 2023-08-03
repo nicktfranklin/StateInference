@@ -311,6 +311,28 @@ class GruEncoder(ModelBase):
 
         return h
 
+    def get_next_hidden_state(self, o: Tensor, h: Tensor, a: Tensor):
+        """
+        only accepts a single observation and a single action
+        Args:
+            obs (Tensor): a CxHxW tensor
+            hidden_state (Tensor) a D tensor of hidden states.  If
+                no value is specified, will use a default value of zero
+            action (Tensor): a single action value
+        """
+        o = o.view(1, -1)
+        a = F.one_hot(a, num_classes=self.n_actions).float()
+        h = h.view(1, -1)
+
+        # use the rnn to take the previous hidden state and current observation
+        # to make a new hidden state
+        h = self.rnn(o, h)
+
+        # update the hidden state with the action
+        h = self.hidden_encoder(h + self.action_encoder(a))
+
+        return h
+
 
 class RecurrentVae(StateVae):
     def __init__(
@@ -333,10 +355,17 @@ class RecurrentVae(StateVae):
         z = self.reparameterize(logits)
         return logits, z
 
-    def _encode_from_state(self, obs: Tensor, h: Tensor) -> Tensor:
+    def encode_from_state(self, obs: Tensor, h: Tensor) -> Tensor:
         logits = self.encoder.rnn(obs, h).view(-1, self.z_layers, self.z_dim)
         z = self.reparameterize(logits)
         return logits, z
+
+    def get_next_hidden_state(self, obs: Tensor, h: Tensor, action: Tensor) -> Tensor:
+        self.eval()
+        with torch.no_grad():
+            return self.encoder.get_next_hidden_state(
+                obs.to(DEVICE), h.to(DEVICE), action.to(DEVICE)
+            )
 
     def get_state(self, obs: Tensor, hidden_state: Optional[Tensor] = None):
         r"""
@@ -375,7 +404,7 @@ class RecurrentVae(StateVae):
                 h = h[None, ...].to(DEVICE)
                 assert h.ndim == 2
                 assert h.shape[1] == h_dim
-                _, z = self._encode_from_state(o, h)
+                _, z = self.encode_from_state(o, h)
                 state_vars.append(torch.argmax(z, dim=-1).detach().cpu().view(-1))
 
         return torch.stack(state_vars).numpy()
