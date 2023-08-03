@@ -7,8 +7,8 @@ state_inference_model:
 
 vae_kwargs:
   beta: 1.0
-  tau: 1.0
-  gamma: 1.0 
+  tau: 2.0
+  gamma: 0.99 
 
 value_iteration_kwargs:
   gamma: 0.99

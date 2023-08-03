@@ -135,7 +135,7 @@ def train_epochs(
     lr_decay = train_args.get("lr_decay", None)
     grad_clip = train_args.get("grad_clip", None)
     if hasattr(model, "configure_optimizers"):
-        optimizer = model.configure_optimizers(dict(lr=lr), lr_decay)
+        optimizer = model.configure_optimizers(dict(lr=lr))
     else:
         assert lr_decay is None, "LR Decay only supported for Model Base"
         optimizer = optim.AdamW(lr=lr)
