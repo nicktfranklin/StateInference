@@ -195,3 +195,7 @@ def convert_8bit_array_to_float_tensor(
         return torch.stack([convert_8bit_array_to_float_tensor(x0) for x0 in x])
 
     return convert_8bit_to_float(make_tensor(x))
+
+
+def maybe_convert_to_tensor(x: Union[Tensor, np.ndarray]) -> Tensor:
+    return x if isinstance(x, Tensor) else torch.tensor(x)

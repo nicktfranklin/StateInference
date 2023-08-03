@@ -11,7 +11,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import trange
 
-from state_inference.gridworld_env import ActType, ObsType, RewType
+from state_inference.gridworld_env import ActType, RewType
 from state_inference.model.tabular_models import (
     TabularRewardEstimator,
     TabularStateActionTransitionEstimator,
@@ -19,7 +19,12 @@ from state_inference.model.tabular_models import (
 )
 from state_inference.model.vae import StateVae
 from state_inference.utils.data import RecurrentVaeDataset, TransitionVaeDataset
-from state_inference.utils.pytorch_utils import DEVICE, convert_8bit_to_float, train
+from state_inference.utils.pytorch_utils import (
+    DEVICE,
+    convert_8bit_to_float,
+    maybe_convert_to_tensor,
+    train,
+)
 
 BATCH_SIZE = 64
 N_EPOCHS = 20
@@ -203,13 +208,13 @@ class ValueIterationAgent(BaseAgent):
             ]
         )
 
-    def get_policy(self, obs: ObsType):
+    def get_policy(self, obs: Tensor):
         s = self._get_hashed_state(obs)
         p = self.policy.get_distribution(s)
         return p
 
     def predict(
-        self, obs: ObsType, state=None, episode_start=None, deterministic: bool = False
+        self, obs: Tensor, state=None, episode_start=None, deterministic: bool = False
     ) -> tuple[np.ndarray, None]:
         if not deterministic and np.random.rand() < self.policy.epsilon:
             return np.array([np.random.randint(self.policy.n_actions)]), None
@@ -412,24 +417,21 @@ class RecurrentStateInf(ViAgentWithExploration):
     def _precalculate_states_for_batch_training(self) -> Tuple[Tensor, Tensor]:
         raise NotImplementedError
 
-    def _init_state(self):
+    def _init_state(self) -> Tensor:
         # unbatch state for the agent (not vae training)
         return torch.zeros(
             self.state_inference_model.z_dim * self.state_inference_model.z_layers
         )
 
-    def _get_hashed_state(self, obs: Tensor, state_prev: Tensor):
-        obs = obs if isinstance(obs, Tensor) else torch.tensor(obs)
+    def _get_hashed_state(self, obs: Tensor, state_prev: Optional[Tensor]):
+        obs = maybe_convert_to_tensor(obs)
         obs = convert_8bit_to_float(obs)
-
-        assert isinstance(state_prev, Tensor)
-
         state = self.state_inference_model.get_state(obs, state_prev)
         return state.dot(self.hash_vector)
 
     def predict(
         self,
-        obs: ObsType,
+        obs: Tensor,
         state: Tensor,
         episode_start=None,
         deterministic: bool = False,
@@ -437,6 +439,11 @@ class RecurrentStateInf(ViAgentWithExploration):
         if not deterministic and np.random.rand() < self.policy.epsilon:
             return np.array([np.random.randint(self.policy.n_actions)]), None
 
-        s = self._get_hashed_state(obs, state)
-        p = self.policy.get_distribution(s)
-        return p.get_actions(deterministic=deterministic), None
+        obs = maybe_convert_to_tensor(obs)
+        obs = convert_8bit_to_float(obs)
+
+        sucessor_state = self.state_inference_model.get_state(obs, state)
+        hashed_sucessor_state = sucessor_state.dot(self.hash_vector)
+
+        p = self.policy.get_distribution(hashed_sucessor_state)
+        return p.get_actions(deterministic=deterministic), sucessor_state
