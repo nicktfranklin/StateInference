@@ -364,7 +364,7 @@ class RecurrentVae(StateVae):
             if obs.view(-1).shape[0] == self.encoder.nin:
                 obs = obs[None, ...]
                 if hidden_state is not None:
-                    hidden_state[None, ...]
+                    hidden_state = hidden_state[None, ...]
 
             if hidden_state is None:
                 hidden_state = torch.zeros(obs.shape[0], h_dim)
