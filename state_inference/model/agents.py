@@ -17,7 +17,7 @@ from state_inference.model.tabular_models import (
     TabularStateActionTransitionEstimator,
     value_iteration,
 )
-from state_inference.model.vae import StateVae
+from state_inference.model.vae import RecurrentVae, StateVae
 from state_inference.utils.data import RecurrentVaeDataset, TransitionVaeDataset
 from state_inference.utils.pytorch_utils import (
     DEVICE,
@@ -28,7 +28,7 @@ from state_inference.utils.pytorch_utils import (
 
 BATCH_SIZE = 64
 N_EPOCHS = 20
-MAX_SEQUENCE_LEN = 10
+MAX_SEQUENCE_LEN = 4
 GRAD_CLIP = True
 GAMMA = 0.99
 N_ITER_VALUE_ITERATION = 1000
@@ -408,7 +408,39 @@ class ViDynaAgent(ViControlableStateInf):
 
 
 class RecurrentStateInf(ViAgentWithExploration):
-    max_sequence_len: int = MAX_SEQUENCE_LEN
+    def __init__(
+        self,
+        task,
+        state_inference_model: RecurrentVae,
+        set_action: Set[ActType],
+        optim_kwargs: Dict[str, Any] | None = None,
+        grad_clip: bool = GRAD_CLIP,
+        batch_size: int = BATCH_SIZE,
+        gamma: float = GAMMA,
+        n_iter: int = N_ITER_VALUE_ITERATION,
+        softmax_gain: float = SOFTMAX_GAIN,
+        epsilon: float = EPSILON,
+        batch_length: int = BATCH_LENGTH,
+        n_epochs: int = N_EPOCHS,
+        alpha: float = ALPHA,
+        max_sequence_len: int = MAX_SEQUENCE_LEN,
+    ) -> None:
+        super().__init__(
+            task,
+            state_inference_model,
+            set_action,
+            optim_kwargs,
+            grad_clip,
+            batch_size,
+            gamma,
+            n_iter,
+            softmax_gain,
+            epsilon,
+            batch_length,
+            n_epochs,
+            alpha,
+        )
+        self.max_sequence_len = max_sequence_len
 
     @staticmethod
     def construct_dataloader_from_obs(
@@ -436,7 +468,30 @@ class RecurrentStateInf(ViAgentWithExploration):
         )
 
     def contruct_validation_dataloader(self, sample_size, seq_len):
-        raise NotImplementedError
+        # assert (
+        #     sample_size % seq_len == 0
+        # ), "Sample size must be an interger multiple of sequence length"
+        validation_obs = []
+        for t in range(sample_size // seq_len):
+            obs_prev = self.task.reset()[0]
+
+            for _ in range(seq_len):
+                action = choice(list(self.set_action))
+                obs, rew, terminated, _, _ = self.task.step(action)
+                obs_tuple = OaroTuple(
+                    obs=torch.tensor(obs_prev),
+                    a=action,
+                    r=rew,
+                    obsp=torch.tensor(obs),
+                    index=t,
+                )
+                validation_obs.append(obs_tuple)
+
+                if terminated:
+                    break
+        return RecurrentStateInf.construct_dataloader_from_obs(
+            batch_size=len(validation_obs), list_obs=validation_obs, max_seq_len=seq_len
+        )
 
     def _precalculate_states_for_batch_training(self) -> Tuple[Tensor, Tensor]:
         raise NotImplementedError
