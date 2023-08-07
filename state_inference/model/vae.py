@@ -291,6 +291,13 @@ class GruEncoder(ModelBase):
         obs: Tensor,
         actions: Tensor,
     ):
+        """
+        Args:
+            obs (Tensor): a NxHxWxC tensor of observations
+            action (Tensor): a NxNa vector of actions.  Note, these
+                correspond to the action take at the previous time step, prior to
+                the observation (obs)
+        """
         obs = torch.flatten(obs, start_dim=2)
         if self.batch_first:
             obs = torch.permute(obs, (1, 0, 2))
@@ -300,15 +307,11 @@ class GruEncoder(ModelBase):
 
         # initialize the hidden state and action
         h = torch.zeros(n_batch, self.hidden_size).to(DEVICE)
-        a_prev = torch.zeros(n_batch, self.hidden_size).to(DEVICE)
 
         # loop through the sequence of observations
         for ii, (o, a) in enumerate(zip(obs, actions)):
             # encode the hidden state with the previous actions
-            h = self.hidden_encoder(h + a_prev)
-
-            # encode the action for the next step
-            a_prev = self.action_encoder(a)
+            h = self.hidden_encoder(h + self.action_encoder(a))
 
             # pass the observation through the rnn (+ encoder)
             h = self.rnn(o, h)

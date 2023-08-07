@@ -110,15 +110,26 @@ class RecurrentVaeDataset(Dataset):
         self.n = max_sequence_len
 
     def __getitem__(self, index: int) -> Tuple:
-        start = max(0, index - self.n)
+        # get the first observation
+        start_idx = max(0, index - self.n)
+
         # filter by trial number
-        while self.trial_idx[start] < self.trial_idx[index]:
-            start += 1
+        while self.trial_idx[start_idx] < self.trial_idx[index]:
+            start_idx += 1
+
+        # get the actions from the previous time step
+        if (start_idx > 0) and (self.trial_idx[start_idx - 1] == self.trial_idx):
+            actions = self.actions[start_idx - 1 : index]
+        else:
+            # pad with zeros if trial start
+            actions = torch.cat(
+                [torch.zeros(1, self.actions.shape[1]), self.actions[start_idx:index]]
+            )
 
         return (
-            self.obs[start : index + 1],
-            self.actions[start : index + 1],
-            index - start,
+            self.obs[start_idx : index + 1],
+            actions,
+            index - start_idx,
         )
 
     def __len__(self):
@@ -130,8 +141,22 @@ class RecurrentVaeDataset(Dataset):
         actions = [x[1] for x in batch]
         lengths = [x[2] for x in batch]
 
+        # we want to left-pad the sequences, and the pad_sequence
+        # function right pads them.  To do so, we use reverse -> pad -> reverse
+
+        # reverse
+        obs = [torch.flip(o, dims=tuple([0])) for o in obs]
+        actions = [torch.flip(a, dims=tuple([0])) for a in actions]
+
+        # pad
         obs = pad_sequence(obs, batch_first=True, padding_value=0)
         actions = pad_sequence(actions, batch_first=True, padding_value=0)
+
+        # reverse (dim 1 is sequence after padding)
+        obs = torch.flip(obs, dims=tuple([1]))
+        actions = torch.flip(actions, dims=tuple([1]))
+
+        # shift the actions by one
 
         return (obs, actions), lengths
 
