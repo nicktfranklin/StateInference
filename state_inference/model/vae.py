@@ -265,11 +265,14 @@ class GruEncoder(ModelBase):
         n_actions: int,
         gru_kwargs: Optional[Dict[str, Any]] = None,
         batch_first: bool = True,
-        dropout: float = 0.1,
+        encoder_dropout: float = 0.1,
+        recurrent_dropout: float = 0.2,
     ):
         super().__init__()
         gru_kwargs = gru_kwargs if gru_kwargs is not None else dict()
-        self.feature_extracter = MLP(input_size, hidden_sizes, embedding_dims, dropout)
+        self.feature_extracter = MLP(
+            input_size, hidden_sizes, embedding_dims, encoder_dropout
+        )
         self.gru_cell = nn.GRUCell(embedding_dims, embedding_dims, **gru_kwargs)
         self.hidden_encoder = nn.Linear(embedding_dims, embedding_dims)
         self.action_encoder = nn.Linear(n_actions, embedding_dims)
@@ -277,6 +280,7 @@ class GruEncoder(ModelBase):
         self.hidden_size = embedding_dims
         self.n_actions = n_actions
         self.nin = input_size
+        self.recurrent_dropout = recurrent_dropout
 
     def rnn(self, obs: Tensor, h: Tensor) -> Tensor:
         x = self.feature_extracter(obs)
@@ -299,7 +303,7 @@ class GruEncoder(ModelBase):
         a_prev = torch.zeros(n_batch, self.hidden_size).to(DEVICE)
 
         # loop through the sequence of observations
-        for o, a in zip(obs, actions):
+        for ii, (o, a) in enumerate(zip(obs, actions)):
             # encode the hidden state with the previous actions
             h = self.hidden_encoder(h + a_prev)
 
@@ -308,6 +312,10 @@ class GruEncoder(ModelBase):
 
             # pass the observation through the rnn (+ encoder)
             h = self.rnn(o, h)
+
+            # apply dropout except for the last time-step
+            if ii < obs.shape[0] - 1:
+                h = F.dropout(h, p=self.recurrent_dropout)
 
         return h
 
@@ -346,6 +354,15 @@ class RecurrentVae(StateVae):
         gamma: float = 1,
     ):
         super().__init__(encoder, decoder, z_dim, z_layers, beta, tau, gamma)
+
+    def configure_optimizers(
+        self,
+        optim_kwargs: Optional[Dict[str, Any]] = None,
+    ):
+        optim_kwargs = optim_kwargs if optim_kwargs is not None else OPTIM_KWARGS
+        optimizer = torch.optim.AdamW(self.parameters(), **optim_kwargs)
+
+        return optimizer
 
     def encode(self, x):
         raise NotImplementedError
