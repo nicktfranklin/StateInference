@@ -44,6 +44,7 @@ class OaroTuple:
     a: ActType
     r: RewType
     obsp: Tensor
+    index: int  # unique index for each trial
 
 
 class BaseAgent:
@@ -81,6 +82,12 @@ class BaseAgent:
     def _init_state(self):
         return None
 
+    def _init_index(self):
+        if len(self.cached_obs) == 0:
+            return 0
+        last_obs = self.cached_obs[-1]
+        return last_obs.index + 1
+
     def learn(
         self,
         total_timesteps: int,
@@ -93,6 +100,7 @@ class BaseAgent:
 
         episode_start = True
         state_prev = self._init_state()
+        idx = self._init_index()
 
         if progress_bar:
             iterator = trange(total_timesteps)
@@ -110,6 +118,7 @@ class BaseAgent:
                 a=action.item(),
                 r=rew,
                 obsp=torch.tensor(obs),
+                index=idx,
             )
 
             self._within_batch_update(obs_tuple, state, state_prev)
@@ -120,6 +129,7 @@ class BaseAgent:
             state_prev = state
             if terminated:
                 obs_prev = self.task.reset()[0]
+                idx += 1
                 assert hasattr(obs, "shape")
                 assert not isinstance(obs_prev, tuple)
 
@@ -406,8 +416,9 @@ class RecurrentStateInf(ViAgentWithExploration):
     ) -> DataLoader:
         obs = torch.stack([obs.obs for obs in list_obs])
         actions = F.one_hot(torch.tensor([obs.a for obs in list_obs]))
-        return RecurrentVaeDataset.contruct_dataloader(
-            obs, actions, max_seq_len, batch_size
+        index = [obs.index for obs in list_obs]
+        return RecurrentVaeDataset.construct_dataloader(
+            obs, actions, index, max_seq_len, batch_size
         )
 
     def _prep_vae_dataloader(
@@ -423,6 +434,9 @@ class RecurrentStateInf(ViAgentWithExploration):
         return RecurrentStateInf.construct_dataloader_from_obs(
             batch_size, self.cached_obs, self.max_sequence_len
         )
+
+    def contruct_validation_dataloader(self, sample_size, seq_len):
+        raise NotImplementedError
 
     def _precalculate_states_for_batch_training(self) -> Tuple[Tensor, Tensor]:
         raise NotImplementedError

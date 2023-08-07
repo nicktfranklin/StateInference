@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import List, Tuple
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -101,15 +101,25 @@ class RecurrentVaeDataset(Dataset):
         self,
         observations: torch.tensor,
         actions: torch.tensor,
+        trial_idx: List[int],
         max_sequence_len: int,
     ):
         self.obs = convert_8bit_to_float(observations)
         self.actions = actions.float()
+        self.trial_idx = trial_idx
         self.n = max_sequence_len
 
     def __getitem__(self, index: int) -> Tuple:
         start = max(0, index - self.n)
-        return self.obs[start:index], self.actions[start:index], index - start
+        # filter by trial number
+        while self.trial_idx[start] < self.trial_idx[index]:
+            start += 1
+
+        return (
+            self.obs[start : index + 1],
+            self.actions[start : index + 1],
+            index - start,
+        )
 
     def __len__(self):
         return len(self.obs)
@@ -126,14 +136,15 @@ class RecurrentVaeDataset(Dataset):
         return (obs, actions), lengths
 
     @classmethod
-    def contruct_dataloader(
+    def construct_dataloader(
         cls,
         observations: torch.tensor,
         actions: torch.tensor,
+        trial_index: List[int],
         max_sequence_len: int = 10,
         batch_size: int = 64,
     ):
-        dataset = cls(observations, actions, max_sequence_len)
+        dataset = cls(observations, actions, trial_index, max_sequence_len)
         return torch.utils.data.DataLoader(
             dataset, batch_size=batch_size, collate_fn=cls.collate_fn
         )
