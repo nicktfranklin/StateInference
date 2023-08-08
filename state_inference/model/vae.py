@@ -47,6 +47,9 @@ class Flatten(nn.Module):
         assert x.view(-1).shape[0] % self.ndim == 0
         while x.shape[-1] != self.ndim:
             x = torch.flatten(x, start_dim=-2)
+
+        if x.ndim == 1:
+            x = x.view(1, self.ndim)
         return x
 
 
