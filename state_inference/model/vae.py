@@ -33,6 +33,23 @@ class ModelBase(nn.Module):
         pass
 
 
+class Flatten(nn.Module):
+    """
+    Progressively flattens the last dimension
+    """
+
+    def __init__(self, ndim: int) -> None:
+        super().__init__()
+        self.ndim = ndim
+
+    def forward(self, x):
+        """progressively flatten last dim"""
+        assert x.view(-1).shape[0] % self.ndim == 0
+        while x.shape[-1] != self.ndim:
+            x = torch.flatten(x, start_dim=-2)
+        return x
+
+
 class MLP(ModelBase):
     def __init__(
         self,
@@ -46,7 +63,7 @@ class MLP(ModelBase):
         self.nout = output_size
 
         # define a simple MLP neural net
-        self.net = []
+        self.net = [Flatten(self.nin)]
         hidden_size = [self.nin] + hidden_sizes + [self.nout]
         for h0, h1 in zip(hidden_size, hidden_size[1:]):
             self.net.extend(
@@ -69,8 +86,7 @@ class MLP(ModelBase):
 
 
 class Encoder(MLP):
-    def forward(self, x: Tensor) -> Tensor:
-        return super().forward(x.view(x.shape[0], -1))
+    pass
 
 
 class Decoder(MLP):
