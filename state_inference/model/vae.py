@@ -274,8 +274,7 @@ class GruEncoder(ModelBase):
             input_size, hidden_sizes, embedding_dims, encoder_dropout
         )
         self.gru_cell = nn.GRUCell(embedding_dims, embedding_dims, **gru_kwargs)
-        self.hidden_encoder = nn.Linear(embedding_dims, embedding_dims)
-        self.action_encoder = nn.Linear(n_actions, embedding_dims)
+        self.hidden_encoder = nn.Linear(embedding_dims + n_actions, embedding_dims)
         self.batch_first = batch_first
         self.hidden_size = embedding_dims
         self.n_actions = n_actions
@@ -284,7 +283,10 @@ class GruEncoder(ModelBase):
 
     def rnn(self, obs: Tensor, h: Tensor) -> Tensor:
         x = self.feature_extracter(obs)
-        return self.gru_cell(x, h)
+        return self.gru_cell(x, h) + x
+
+    def joint_embed(self, h, a):
+        return self.hidden_encoder(torch.cat([h, a], dim=1))
 
     def forward(
         self,
@@ -310,8 +312,8 @@ class GruEncoder(ModelBase):
 
         # loop through the sequence of observations
         for ii, (o, a) in enumerate(zip(obs, actions)):
-            # encode the hidden state with the previous actions
-            h = self.hidden_encoder(h + self.action_encoder(a))
+            # # encode the hidden state with the previous actions
+            h = self.joint_embed(h, a)
 
             # pass the observation through the rnn (+ encoder)
             h = self.rnn(o, h)
@@ -340,7 +342,7 @@ class GruEncoder(ModelBase):
         h = self.rnn(o, h)
 
         # update the hidden state with the action
-        h = self.hidden_encoder(h + self.action_encoder(a))
+        h = self.joint_embed(h, a)
 
         return h.view(-1)
 
@@ -369,6 +371,12 @@ class RecurrentVae(StateVae):
 
     def encode(self, x):
         raise NotImplementedError
+
+    def forward(self, obs: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
+        logits, z = self._encode_from_sequence(obs, actions)
+        return (logits, z), self.decode(z).view(
+            obs[:, -1, ...].shape
+        )  # preserve original shape
 
     def _encode_from_sequence(self, obs: Tensor, actions: Tensor) -> Tensor:
         logits = self.encoder(obs, actions).view(-1, self.z_layers, self.z_dim)
