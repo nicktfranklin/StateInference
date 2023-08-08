@@ -66,7 +66,7 @@ class MLP(ModelBase):
         self.nout = output_size
 
         # define a simple MLP neural net
-        self.net = [Flatten(self.nin)]
+        self.net = []
         hidden_size = [self.nin] + hidden_sizes + [self.nout]
         for h0, h1 in zip(hidden_size, hidden_size[1:]):
             self.net.extend(
@@ -89,7 +89,39 @@ class MLP(ModelBase):
 
 
 class Encoder(MLP):
-    pass
+    def forward(self, x: Tensor) -> Tensor:
+        return super().forward(x.view(x.shape[0], -1))
+
+
+class SimpleEncoder(ModelBase):
+    def __init__(
+        self,
+        input_size: int,
+        hidden_sizes: List[int],
+        output_size: int,
+    ):
+        super().__init__()
+        self.nin = input_size
+        self.nout = output_size
+
+        # define a simple MLP neural net
+        self.net = [Flatten(self.nin)]
+        hidden_size = [self.nin] + hidden_sizes + [self.nout]
+        for h0, h1 in zip(hidden_size, hidden_size[1:]):
+            self.net.extend(
+                [
+                    nn.Linear(h0, h1),
+                    nn.ReLU(),
+                ]
+            )
+
+        # pop the last ReLU and dropout layers for the output
+        self.net.pop()
+
+        self.net = nn.Sequential(*self.net)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.net(x)
 
 
 class Decoder(MLP):
@@ -279,19 +311,14 @@ class GruEncoder(ModelBase):
     def __init__(
         self,
         input_size: int,
-        hidden_sizes: List[int],
         embedding_dims: int,
         n_actions: int,
         gru_kwargs: Optional[Dict[str, Any]] = None,
         batch_first: bool = True,
-        encoder_dropout: float = 0.1,
         recurrent_dropout: float = 0.2,
     ):
         super().__init__()
         gru_kwargs = gru_kwargs if gru_kwargs is not None else dict()
-        self.feature_extracter = MLP(
-            input_size, hidden_sizes, embedding_dims, encoder_dropout
-        )
         self.gru_cell = nn.GRUCell(embedding_dims, embedding_dims, **gru_kwargs)
         self.hidden_encoder = nn.Linear(embedding_dims + n_actions, embedding_dims)
         self.batch_first = batch_first
@@ -300,8 +327,7 @@ class GruEncoder(ModelBase):
         self.nin = input_size
         self.recurrent_dropout = recurrent_dropout
 
-    def rnn(self, obs: Tensor, h: Tensor) -> Tensor:
-        x = self.feature_extracter(obs)
+    def rnn(self, x: Tensor, h: Tensor) -> Tensor:
         return self.gru_cell(x, h) + x
 
     def joint_embed(self, h, a):
@@ -309,7 +335,7 @@ class GruEncoder(ModelBase):
 
     def forward(
         self,
-        obs: Tensor,
+        embedding: Tensor,
         actions: Tensor,
     ):
         """
@@ -319,31 +345,31 @@ class GruEncoder(ModelBase):
                 correspond to the action take at the previous time step, prior to
                 the observation (obs)
         """
-        obs = torch.flatten(obs, start_dim=2)
+        embedding = torch.flatten(embedding, start_dim=2)
         if self.batch_first:
-            obs = torch.permute(obs, (1, 0, 2))
+            embedding = torch.permute(embedding, (1, 0, 2))
             actions = torch.permute(actions, (1, 0, 2))
 
-        n_batch = obs.shape[1]
+        n_batch = embedding.shape[1]
 
         # initialize the hidden state and action
         h = torch.zeros(n_batch, self.hidden_size).to(DEVICE)
 
         # loop through the sequence of observations
-        for ii, (o, a) in enumerate(zip(obs, actions)):
-            # # encode the hidden state with the previous actions
+        for ii, (x, a) in enumerate(zip(embedding, actions)):
+            # encode the hidden state with the previous actions
             h = self.joint_embed(h, a)
 
             # pass the observation through the rnn (+ encoder)
-            h = self.rnn(o, h)
+            h = self.rnn(x, h)
 
             # apply dropout except for the last time-step
-            if ii < obs.shape[0] - 1:
+            if ii < embedding.shape[0] - 1:
                 h = F.dropout(h, p=self.recurrent_dropout)
 
         return h
 
-    def get_next_hidden_state(self, o: Tensor, h: Tensor, a: Tensor):
+    def update_hidden_state(self, x: Tensor, h: Tensor, a: Tensor):
         """
         only accepts a single observation and a single action
         Args:
@@ -352,13 +378,13 @@ class GruEncoder(ModelBase):
                 no value is specified, will use a default value of zero
             action (Tensor): a single action value
         """
-        o = o.view(1, -1)
+        x = x.view(1, -1)
         a = F.one_hot(a, num_classes=self.n_actions).float()
         h = h.view(1, -1)
 
         # use the rnn to take the previous hidden state and current observation
         # to make a new hidden state
-        h = self.rnn(o, h)
+        h = self.rnn(x, h)
 
         # update the hidden state with the action
         h = self.joint_embed(h, a)
@@ -369,7 +395,8 @@ class GruEncoder(ModelBase):
 class RecurrentVae(StateVae):
     def __init__(
         self,
-        encoder: GruEncoder,
+        encoder: Encoder,
+        rnn: GruEncoder,
         decoder: ModelBase,
         z_dim: int,
         z_layers: int = 2,
@@ -378,41 +405,35 @@ class RecurrentVae(StateVae):
         gamma: float = 1,
     ):
         super().__init__(encoder, decoder, z_dim, z_layers, beta, tau, gamma)
+        self.rnn = rnn
 
-    def configure_optimizers(
-        self,
-        optim_kwargs: Optional[Dict[str, Any]] = None,
-    ):
-        optim_kwargs = optim_kwargs if optim_kwargs is not None else OPTIM_KWARGS
-        optimizer = torch.optim.AdamW(self.parameters(), **optim_kwargs)
-
-        return optimizer
-
-    def encode(self, x):
-        raise NotImplementedError
-
-    def forward(self, obs: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
-        logits, z = self._encode_from_sequence(obs, actions)
-        return (logits, z), self.decode(z).view(
-            obs[:, -1, ...].shape
-        )  # preserve original shape
-
-    def _encode_from_sequence(self, obs: Tensor, actions: Tensor) -> Tensor:
-        logits = self.encoder(obs, actions).view(-1, self.z_layers, self.z_dim)
+    def encode_from_sequence(self, obs: Tensor, actions: Tensor) -> Tensor:
+        x = self.encoder(obs)
+        logits = self.rnn(x, actions).view(-1, self.z_layers, self.z_dim)
         z = self.reparameterize(logits)
         return logits, z
 
     def encode_from_state(self, obs: Tensor, h: Tensor) -> Tensor:
-        logits = self.encoder.rnn(obs, h).view(-1, self.z_layers, self.z_dim)
+        x = self.encoder(obs)
+        logits = self.rnn.rnn(x, h).view(-1, self.z_layers, self.z_dim)
         z = self.reparameterize(logits)
         return logits, z
 
-    def get_next_hidden_state(self, obs: Tensor, h: Tensor, action: Tensor) -> Tensor:
+    def forward(self, obs: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
+        x = self.encode(obs)
+        time.sleep(0.2)
+        logits, z = self.encode_from_sequence(x, actions)
+        return (logits, z), self.decode(z).view(
+            obs[:, -1, ...].shape
+        )  # preserve original shape
+
+    def update_hidden_state(self, obs: Tensor, h: Tensor, action: Tensor) -> Tensor:
         self.eval()
         with torch.no_grad():
-            return self.encoder.get_next_hidden_state(
-                obs.to(DEVICE), h.to(DEVICE), action.to(DEVICE)
-            )
+            x = self.encoder(obs.to(DEVICE))
+            h = h.to(DEVICE)
+            action = action.to(DEVICE)
+            return self.rnn.update_hidden_state(x, h, action)
 
     def get_state(self, obs: Tensor, hidden_state: Optional[Tensor] = None):
         r"""
@@ -423,20 +444,14 @@ class RecurrentVae(StateVae):
             hidden_state (Tensor, optional) a NxD tensor of hidden states.  If
                 no value is specified, will use a default value of zero
         """
-        # hidden_state = (
-        #     hidden_state
-        #     if isinstance(hidden_state, Tensor)
-        #     else torch.zeros(ob).to(DEVICE)
-        # )
 
         h_dim = self.z_dim * self.z_layers
 
         self.eval()
         with torch.no_grad():
-            # check the dimensions, expand if unbatch
-
-            # expand if unbatched
             assert obs.view(-1).shape[0] % self.encoder.nin == 0
+
+            # check the dimensions, expand if unbatched
             if obs.view(-1).shape[0] == self.encoder.nin:
                 obs = obs[None, ...]
                 if hidden_state is not None:
@@ -461,7 +476,7 @@ class RecurrentVae(StateVae):
         obs = obs.to(DEVICE).float()
         actions = actions.to(DEVICE).float()
 
-        logits, z = self._encode_from_sequence(obs, actions)
+        logits, z = self.encode_from_sequence(obs, actions)
 
         # flatten the embedding for the input to decoder
         z = z.view(-1, self.z_layers * self.z_dim).float()

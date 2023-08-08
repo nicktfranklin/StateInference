@@ -530,7 +530,7 @@ class RecurrentStateInf(ViAgentWithExploration):
             a = p.get_actions(deterministic=deterministic)
 
         # update the RNN Hidden state
-        next_state = self.state_inference_model.get_next_hidden_state(obs, state, a)
+        next_state = self.state_inference_model.update_hidden_state(obs, state, a)
 
         return a, next_state
 
