@@ -105,9 +105,10 @@ class CnnEncoder(ModelBase):
         self.cnn = nn.Sequential(
             nn.Conv2d(input_channels, 32, kernel_size=8, stride=2, padding=0),
             nn.BatchNorm2d(32),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
             nn.BatchNorm2d(64),
+            nn.GELU(),
         )
         # run a random tensor to get the shape of the output dim
         x = torch.rand(1, input_channels, height, width)
@@ -142,6 +143,47 @@ class Decoder(MLP):
     def loss(self, x, target):
         y_hat = self(x)
         return F.mse_loss(y_hat, torch.flatten(target, start_dim=1))
+
+
+class Reshape(torch.nn.Module):
+    def __init__(self, outer_shape):
+        super(Reshape, self).__init__()
+        self.outer_shape = outer_shape
+
+    def forward(self, x):
+        return x.view(x.size(0), *self.outer_shape)
+
+
+class CnnDecoder(ModelBase):
+    def __init__(
+        self,
+        input_size: int,
+        channel_out: int,
+        h: int = 40,
+        w: int = 40,
+    ):
+        # step up is 4x
+        h //= 4
+        w //= 4
+        print(h, w)
+
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_size, 64 * channel_out * h * w),
+            nn.BatchNorm1d(64 * channel_out * h * w),
+            nn.GELU(),
+            Reshape((64 * channel_out, h, w)),
+            torch.nn.ConvTranspose2d(
+                64 * channel_out, 32 * channel_out, 4, 2, padding=1
+            ),
+            nn.BatchNorm2d(32 * channel_out),
+            nn.GELU(),
+            torch.nn.ConvTranspose2d(32 * channel_out, channel_out, 4, 2, padding=1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        return torch.flatten(self.net(x))
 
 
 class StateVae(ModelBase):
