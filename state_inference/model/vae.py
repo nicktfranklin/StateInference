@@ -103,15 +103,11 @@ class CnnEncoder(ModelBase):
     ):
         super().__init__()
         self.cnn = nn.Sequential(
-            nn.Conv2d(input_channels, 16, kernel_size=5, stride=2, padding=0),
-            nn.BatchNorm2d(16),
-            nn.ReLU(),
-            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=0),
+            nn.Conv2d(input_channels, 32, kernel_size=8, stride=2, padding=0),
             nn.BatchNorm2d(32),
             nn.ReLU(),
-            # nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
-            # nn.BatchNorm2d(64),
-            # nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
+            nn.BatchNorm2d(64),
         )
         # run a random tensor to get the shape of the output dim
         x = torch.rand(1, input_channels, height, width)
@@ -121,7 +117,8 @@ class CnnEncoder(ModelBase):
 
         # Flatten and pass through linear layer
         self.linear = nn.Sequential(
-            Flatten(x.shape[0]), nn.Linear(x.shape[0], output_size)
+            Flatten(x.shape[0]),
+            nn.Linear(x.shape[0], output_size),
         )
 
         # self.linear = nn.Linear(output_size, output_size)
