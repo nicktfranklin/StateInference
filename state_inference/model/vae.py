@@ -93,35 +93,41 @@ class Encoder(MLP):
         return super().forward(x.view(x.shape[0], -1))
 
 
-class SimpleEncoder(ModelBase):
+class CnnEncoder(ModelBase):
     def __init__(
         self,
-        input_size: int,
-        hidden_sizes: List[int],
+        input_channels: int,
         output_size: int,
+        height: int = 40,
+        width: int = 40,
     ):
         super().__init__()
-        self.nin = input_size
-        self.nout = output_size
+        self.cnn = nn.Sequential(
+            nn.Conv2d(input_channels, 16, kernel_size=5, stride=2, padding=0),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=0),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            # nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
+            # nn.BatchNorm2d(64),
+            # nn.ReLU(),
+        )
+        # run a random tensor to get the shape of the output dim
+        x = torch.rand(1, input_channels, height, width)
+        with torch.no_grad():
+            print(self.cnn(x).shape)
+            x = torch.flatten(self.cnn(x))
 
-        # define a simple MLP neural net
-        self.net = [Flatten(self.nin)]
-        hidden_size = [self.nin] + hidden_sizes + [self.nout]
-        for h0, h1 in zip(hidden_size, hidden_size[1:]):
-            self.net.extend(
-                [
-                    nn.Linear(h0, h1),
-                    nn.ReLU(),
-                ]
-            )
+        # Flatten and pass through linear layer
+        self.linear = nn.Sequential(
+            Flatten(x.shape[0]), nn.Linear(x.shape[0], output_size)
+        )
 
-        # pop the last ReLU and dropout layers for the output
-        self.net.pop()
+        # self.linear = nn.Linear(output_size, output_size)
 
-        self.net = nn.Sequential(*self.net)
-
-    def forward(self, x: Tensor) -> Tensor:
-        return self.net(x)
+    def forward(self, x):
+        return self.linear(self.cnn(x))
 
 
 class Decoder(MLP):
