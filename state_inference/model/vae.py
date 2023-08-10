@@ -95,9 +95,28 @@ class MLP(ModelBase):
         return self.net(x)
 
 
-class Encoder(MLP):
+class Encoder(ModelBase):
+    def __init__(
+        self,
+        input_size: int,
+        hidden_sizes: List[int],
+        output_size: int,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.net = MLP(input_size, hidden_sizes, output_size, dropout)
+
     def forward(self, x: Tensor) -> Tensor:
-        return super().forward(x.view(x.shape[0], -1))
+        return self.net(x.view(x.shape[0], -1))
+
+    def encode_sequence(self, x: Tensor, batch_first: bool = True) -> Tensor:
+        x = torch.flatten(x, start_dim=2)
+        if batch_first:
+            x = x.permute(1, 0, 2)
+        x = torch.stack([self.net(xt) for xt in x])
+        if batch_first:
+            x = x.permute(1, 0, 2)
+        return x
 
 
 class CnnEncoder(ModelBase):
@@ -120,7 +139,6 @@ class CnnEncoder(ModelBase):
         # run a random tensor to get the shape of the output dim
         x = torch.rand(1, input_channels, height, width)
         with torch.no_grad():
-            # print(self.cnn(x).shape)
             x = torch.flatten(self.cnn(x))
 
         # Flatten and pass through linear layer
@@ -172,7 +190,6 @@ class CnnDecoder(ModelBase):
         # step up is 4x
         h //= 4
         w //= 4
-        # print(h, w)
 
         super().__init__()
         self.net = nn.Sequential(
@@ -287,8 +304,8 @@ class StateVae(ModelBase):
 class StateVaeLearnedTau(StateVae):
     def __init__(
         self,
-        encoder: ModelBase,
-        decoder: ModelBase,
+        encoder: Encoder,
+        decoder: Decoder,
         z_dim: int,
         z_layers: int = 2,
         beta: float = 1,
@@ -334,8 +351,8 @@ class DecoderWithActions(ModelBase):
 class TransitionStateVae(StateVae):
     def __init__(
         self,
-        encoder: ModelBase,
-        decoder: ModelBase,
+        encoder: Encoder,
+        decoder: Decoder,
         next_obs_decoder: DecoderWithActions,
         z_dim: int,
         z_layers: int = 2,
@@ -459,7 +476,7 @@ class RecurrentVae(StateVae):
         self,
         encoder: Encoder,
         rnn: GruEncoder,
-        decoder: ModelBase,
+        decoder: Decoder,
         z_dim: int,
         z_layers: int = 2,
         beta: float = 1,
@@ -473,7 +490,9 @@ class RecurrentVae(StateVae):
         self.rnn = rnn
 
     def encode_from_sequence(self, obs: Tensor, actions: Tensor) -> Tensor:
-        x = self.encoder(obs)
+        # use a loop to encode the sequences
+        check_tensor_dims(obs, self.input_shape)
+        x = self.encoder.encode_sequence(obs)
         logits = self.rnn(x, actions).view(-1, self.z_layers, self.z_dim)
         z = self.reparameterize(logits)
         return logits, z
