@@ -5,12 +5,18 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.distributions.categorical import Categorical
 
-from state_inference.utils.pytorch_utils import DEVICE, gumbel_softmax
+from state_inference.utils.pytorch_utils import (
+    DEVICE,
+    check_tensor_dims,
+    gumbel_softmax,
+    maybe_expand_batch,
+)
 
 OPTIM_KWARGS = dict(lr=3e-4)
 VAE_BETA = 1.0
 VAE_TAU = 1.0
 VAE_GAMMA = 1.0
+INPUT_SHAPE = (40, 40, 1)
 
 
 class ModelBase(nn.Module):
@@ -85,6 +91,7 @@ class MLP(ModelBase):
         self.net = nn.Sequential(*self.net)
 
     def forward(self, x: Tensor) -> Tensor:
+        assert x.shape[-1] == self.nin
         return self.net(x)
 
 
@@ -113,7 +120,7 @@ class CnnEncoder(ModelBase):
         # run a random tensor to get the shape of the output dim
         x = torch.rand(1, input_channels, height, width)
         with torch.no_grad():
-            print(self.cnn(x).shape)
+            # print(self.cnn(x).shape)
             x = torch.flatten(self.cnn(x))
 
         # Flatten and pass through linear layer
@@ -165,7 +172,7 @@ class CnnDecoder(ModelBase):
         # step up is 4x
         h //= 4
         w //= 4
-        print(h, w)
+        # print(h, w)
 
         super().__init__()
         self.net = nn.Sequential(
@@ -196,6 +203,7 @@ class StateVae(ModelBase):
         beta: float = VAE_BETA,
         tau: float = VAE_TAU,
         gamma: float = VAE_GAMMA,
+        input_shape: Tuple[int, int, int] = INPUT_SHAPE,
     ):
         """
         Note: larger values of beta result in more independent state values
@@ -208,6 +216,7 @@ class StateVae(ModelBase):
         self.beta = beta
         self.tau = tau
         self.gamma = gamma
+        self.input_shape = input_shape
 
     def reparameterize(self, logits):
         # either sample the state or take the argmax
@@ -246,11 +255,13 @@ class StateVae(ModelBase):
 
     def get_state(self, x):
         self.eval()
+
         with torch.no_grad():
+            # check shape
+            check_tensor_dims(x, self.input_shape)
+
             # expand if unbatched
-            assert x.view(-1).shape[0] % self.encoder.nin == 0
-            if x.view(-1).shape[0] == self.encoder.nin:
-                x = x[None, ...]
+            x = maybe_expand_batch(x, self.input_shape)
 
             _, z = self.encode(x.to(DEVICE))
             state_vars = torch.argmax(z, dim=-1).detach().cpu().numpy()
@@ -283,8 +294,11 @@ class StateVaeLearnedTau(StateVae):
         beta: float = 1,
         tau: float = 1,
         gamma: float = 1,
+        input_shape: Tuple[int, int, int] = INPUT_SHAPE,
     ):
-        super().__init__(encoder, decoder, z_dim, z_layers, beta, tau, gamma)
+        super().__init__(
+            encoder, decoder, z_dim, z_layers, beta, tau, gamma, input_shape
+        )
         self.tau = torch.nn.Parameter(torch.tensor([tau]), requires_grad=True)
 
     def anneal_tau(self):
@@ -328,8 +342,11 @@ class TransitionStateVae(StateVae):
         beta: float = 1,
         tau: float = 1,
         gamma: float = 1,
+        input_shape: Tuple[int, int, int] = (1, 40, 40),
     ):
-        super().__init__(encoder, decoder, z_dim, z_layers, beta, tau, gamma)
+        super().__init__(
+            encoder, decoder, z_dim, z_layers, beta, tau, gamma, input_shape
+        )
         self.next_obs_decoder = next_obs_decoder
 
     def forward(self, x: Tensor):
@@ -448,8 +465,11 @@ class RecurrentVae(StateVae):
         beta: float = 1,
         tau: float = 1,
         gamma: float = 1,
+        input_shape: Tuple[int, int, int] = INPUT_SHAPE,
     ):
-        super().__init__(encoder, decoder, z_dim, z_layers, beta, tau, gamma)
+        super().__init__(
+            encoder, decoder, z_dim, z_layers, beta, tau, gamma, input_shape
+        )
         self.rnn = rnn
 
     def encode_from_sequence(self, obs: Tensor, actions: Tensor) -> Tensor:
@@ -466,7 +486,6 @@ class RecurrentVae(StateVae):
 
     def forward(self, obs: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
         x = self.encode(obs)
-        time.sleep(0.2)
         logits, z = self.encode_from_sequence(x, actions)
         return (logits, z), self.decode(z).view(
             obs[:, -1, ...].shape
@@ -475,6 +494,8 @@ class RecurrentVae(StateVae):
     def update_hidden_state(self, obs: Tensor, h: Tensor, action: Tensor) -> Tensor:
         self.eval()
         with torch.no_grad():
+            # will always be a single example
+            obs = obs.view(-1, *self.input_shape)
             x = self.encoder(obs.to(DEVICE))
             h = h.to(DEVICE)
             action = action.to(DEVICE)
@@ -494,16 +515,15 @@ class RecurrentVae(StateVae):
 
         self.eval()
         with torch.no_grad():
-            assert obs.view(-1).shape[0] % self.encoder.nin == 0
+            check_tensor_dims(obs, self.input_shape)
 
-            # check the dimensions, expand if unbatched
-            if obs.view(-1).shape[0] == self.encoder.nin:
-                obs = obs[None, ...]
-                if hidden_state is not None:
-                    hidden_state = hidden_state[None, ...]
-
+            # initialize hidden state if needed
             if hidden_state is None:
                 hidden_state = torch.zeros(obs.shape[0], h_dim)
+
+            # check the dimensions, expand if unbatched
+            obs = maybe_expand_batch(obs, self.input_shape)
+            hidden_state = maybe_expand_batch(hidden_state, (h_dim))
 
             state_vars = []
             for o, h in zip(obs, hidden_state):

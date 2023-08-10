@@ -508,6 +508,9 @@ class RecurrentStateInf(ViAgentWithExploration):
         state = self.state_inference_model.get_state(obs, state_prev)
         return state.dot(self.hash_vector)
 
+    def _update_hidden_state(self, obs: Tensor, state: Tensor, a: Tensor) -> Tensor:
+        return self.state_inference_model.update_hidden_state(obs, state, a)
+
     def predict(
         self,
         obs: Tensor,
@@ -530,7 +533,7 @@ class RecurrentStateInf(ViAgentWithExploration):
             a = p.get_actions(deterministic=deterministic)
 
         # update the RNN Hidden state
-        next_state = self.state_inference_model.update_hidden_state(obs, state, a)
+        next_state = self._update_hidden_state(obs, state, a)
 
         return a, next_state
 
