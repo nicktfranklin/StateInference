@@ -201,7 +201,13 @@ def maybe_convert_to_tensor(x: Union[Tensor, np.ndarray]) -> Tensor:
     return x if isinstance(x, Tensor) else torch.tensor(x)
 
 
-def check_tensor_dims(x: Tensor, shape: Tuple[int, int] | Tuple[int, int, int]) -> bool:
+def check_shape_match(x: Tensor, shape: Tuple[int]):
+    return x.view(-1).shape[0] == torch.prod(torch.tensor(shape))
+
+
+def assert_correct_end_shape(
+    x: Tensor, shape: Tuple[int, int] | Tuple[int, int, int]
+) -> bool:
     if len(shape) == 2:
         assert x.shape[-2:] == shape
     elif len(shape) == 3:
@@ -214,6 +220,6 @@ def maybe_expand_batch(
     x: Tensor, target_shape: Tuple[int, int] | Tuple[int, int, int]
 ) -> Tensor:
     # expand if unbatched
-    if x.view(-1).shape[0] == torch.prod(torch.tensor(target_shape)):
+    if check_shape_match(x, target_shape):
         return x[None, ...]
     return

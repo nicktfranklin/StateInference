@@ -7,7 +7,8 @@ from torch.distributions.categorical import Categorical
 
 from state_inference.utils.pytorch_utils import (
     DEVICE,
-    check_tensor_dims,
+    assert_correct_end_shape,
+    check_shape_match,
     gumbel_softmax,
     maybe_expand_batch,
 )
@@ -85,8 +86,7 @@ class MLP(ModelBase):
             )
 
         # pop the last ReLU and dropout layers for the output
-        self.net.pop()
-        self.net.pop()
+        self.net.append(nn.Linear(h1, output_size))
 
         self.net = nn.Sequential(*self.net)
 
@@ -151,7 +151,7 @@ class CnnEncoder(ModelBase):
         self.input_shape = (height, width, input_channels)
 
     def forward(self, x):
-        check_tensor_dims(x, self.input_shape)
+        assert_correct_end_shape(x, self.input_shape)
         assert x.ndim <= 4, "Conv Net only accepts 3d or 4d input"
 
         # permute to (N, C, H, W) or (C, H, W)
@@ -241,6 +241,7 @@ class StateVae(ModelBase):
         self.tau = tau
         self.gamma = gamma
         self.input_shape = input_shape
+        self.h_dim = z_layers * z_dim
 
     def reparameterize(self, logits):
         # either sample the state or take the argmax
@@ -282,7 +283,7 @@ class StateVae(ModelBase):
 
         with torch.no_grad():
             # check shape
-            check_tensor_dims(x, self.input_shape)
+            assert_correct_end_shape(x, self.input_shape)
 
             # expand if unbatched
             x = maybe_expand_batch(x, self.input_shape)
@@ -398,23 +399,75 @@ class GruEncoder(ModelBase):
         self,
         input_size: int,
         embedding_dims: int,
-        n_actions: int,
         gru_kwargs: Optional[Dict[str, Any]] = None,
         batch_first: bool = True,
-        recurrent_dropout: float = 0.2,
+        dropout: float = 0.2,
     ):
         super().__init__()
         gru_kwargs = gru_kwargs if gru_kwargs is not None else dict()
-        self.gru_cell = nn.GRUCell(embedding_dims, embedding_dims, **gru_kwargs)
-        self.hidden_encoder = nn.Linear(embedding_dims + n_actions, embedding_dims)
+        gru_kwargs["batch_first"] = batch_first
+        gru_kwargs["dropout"] = dropout
+        self.gru = nn.GRU(embedding_dims, embedding_dims, **gru_kwargs)
         self.batch_first = batch_first
         self.hidden_size = embedding_dims
-        self.n_actions = n_actions
         self.nin = input_size
-        self.recurrent_dropout = recurrent_dropout
+        self.dropout = dropout
+
+    def forward(self, x: Tensor) -> Tensor:
+        assert x.ndim == 3
+        x = torch.flatten(x, start_dim=2)
+        assert x.shape[-1] == self.nin
+
+        if self.batch_first:
+            x = torch.permute(x, (1, 0, 2))
+
+        _, h_n = self.gru(x)
+        return h_n.squeeze(0)
+
+    def single_update(self, x: Tensor, h: Tensor) -> Tensor:
+        """
+        Updates the hidden state for a single time-point
+
+        Args:
+            -x (NxD) Tensor
+            -h (NxH)Tensor
+        """
+        assert x.ndim == 2
+        assert h.ndim == 2
+        assert x.shape[1] == self.nin
+        assert h.shape[1] == self.hidden_size
+
+        # add time-dimension to input
+        x = x[None, ...]
+        if self.batch_first:
+            x = x.permute(1, 0, 2)
+
+        # reshape to (D*N*H)
+        h = h.unsqueeze(1)
+
+        _, h_n = self.gru(x, h)
+
+        return h_n.squeeze(0)
+
+
+class GruActionEncoder(GruEncoder):
+    def __init__(
+        self,
+        input_size: int,
+        embedding_dims: int,
+        n_actions: int,
+        gru_kwargs: Optional[Dict[str, Any]] = None,
+        batch_first: bool = True,
+        dropout: float = 0.2,
+    ):
+        # super().__init__()
+        super().__init__(input_size, embedding_dims, gru_kwargs, batch_first, dropout)
+        self.gru = nn.GRUCell(embedding_dims, embedding_dims, **gru_kwargs)
+        self.hidden_encoder = nn.Linear(embedding_dims + n_actions, embedding_dims)
+        self.n_actions = n_actions
 
     def rnn(self, x: Tensor, h: Tensor) -> Tensor:
-        return self.gru_cell(x, h) + x
+        return self.gru(x, h)
 
     def joint_embed(self, h, a):
         return self.hidden_encoder(torch.cat([h, a], dim=1))
@@ -455,7 +508,7 @@ class GruEncoder(ModelBase):
 
         return h
 
-    def update_hidden_state(self, x: Tensor, h: Tensor, a: Tensor):
+    def single_update(self, x: Tensor, h: Tensor, a: Tensor):
         """
         only accepts a single observation and a single action
         Args:
@@ -495,84 +548,82 @@ class RecurrentVae(StateVae):
             encoder, decoder, z_dim, z_layers, beta, tau, gamma, input_shape
         )
         self.rnn = rnn
-        self.logit_layer = nn.Linear(z_dim, z_dim)
 
-    def reparameterize(self, logits):
-        logits = self.logit_layer(logits)
-        return super().reparameterize(logits)
-
-    def encode_from_sequence(self, obs: Tensor, actions: Tensor) -> Tensor:
+    def encode_from_sequence(self, obs: Tensor) -> Tensor:
         # use a loop to encode the sequences
-        check_tensor_dims(obs, self.input_shape)
-        x = self.encoder.encode_sequence(obs)
-        logits = self.rnn(x, actions).view(-1, self.z_layers, self.z_dim)
-        z = self.reparameterize(logits)
+        assert_correct_end_shape(obs, self.input_shape)
+        logits = self.encoder.encode_sequence(obs)
+        logits = logits + self.rnn(logits)  # only use rnn additively on the embeddings
+        z = self.reparameterize(logits.view(-1, self.z_layers, self.z_dim))
+        return logits, z
+
+    def _encode_single_obs_from_state(self, obs: Tensor, h: Tensor) -> Tensor:
+        assert check_shape_match(obs, self.input_shape)
+        assert check_shape_match(h, self.h_dim)
+
+        logits = self.encoder(obs)
+        logits = logits + self.rnn.single_update(logits, h)  # only use rnn additively
+
+        z = self.reparameterize(logits.view(-1, self.z_layers, self.z_dim))
         return logits, z
 
     def encode_from_state(self, obs: Tensor, h: Tensor) -> Tensor:
-        x = self.encoder(obs)
-        logits = self.rnn.rnn(x, h).view(-1, self.z_layers, self.z_dim)
-        z = self.reparameterize(logits)
-        return logits, z
+        if check_shape_match(obs, self.input_shape):
+            return self._encode_single_obs_from_state(obs, h)
 
-    def forward(self, obs: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
+        logits, z = zip(
+            *[self._encode_single_obs_from_state(o0, h0) for o0, h0 in zip(obs, h)]
+        )
+        return torch.stack(logits), torch.stack(z)
+
+    def forward(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
         x = self.encode(obs)
-        logits, z = self.encode_from_sequence(x, actions)
+        logits, z = self.encode_from_sequence(x)
         return (logits, z), self.decode(z).view(
             obs[:, -1, ...].shape
         )  # preserve original shape
 
-    def update_hidden_state(self, obs: Tensor, h: Tensor, action: Tensor) -> Tensor:
+    def update_hidden_state(self, obs: Tensor, h: Tensor) -> Tensor:
         self.eval()
+
+        obs = maybe_expand_batch(obs, self.input_shape)
+        h = maybe_expand_batch(h, (self.h_dim))
+
         with torch.no_grad():
             # will always be a single example
             obs = obs.view(-1, *self.input_shape)
             x = self.encoder(obs.to(DEVICE))
             h = h.to(DEVICE)
-            action = action.to(DEVICE)
-            return self.rnn.update_hidden_state(x, h, action)
+            return self.rnn.single_update(x, h).squeeze()
 
-    def get_state(self, obs: Tensor, hidden_state: Optional[Tensor] = None):
+    def get_state(self, obs: Tensor, hidden_state: Tensor):
         r"""
-        Takes in observations and returns discrete states
+        Takes in observations and returns discrete states. Does not accept sequence data
 
         Args:
-            obs (Tensor): a NxCxHxW tensor
+            obs (Tensor): a NxHxWxC tensor
             hidden_state (Tensor, optional) a NxD tensor of hidden states.  If
                 no value is specified, will use a default value of zero
         """
 
-        h_dim = self.z_dim * self.z_layers
-
         self.eval()
         with torch.no_grad():
-            check_tensor_dims(obs, self.input_shape)
-
-            # initialize hidden state if needed
-            if hidden_state is None:
-                hidden_state = torch.zeros(obs.shape[0], h_dim)
+            assert_correct_end_shape(obs, self.input_shape)
 
             # check the dimensions, expand if unbatched
             obs = maybe_expand_batch(obs, self.input_shape)
-            hidden_state = maybe_expand_batch(hidden_state, (h_dim))
+            hidden_state = maybe_expand_batch(hidden_state, (self.h_dim))
 
-            state_vars = []
-            for o, h in zip(obs, hidden_state):
-                o = o.view(-1)[None, ...].to(DEVICE)
-                h = h[None, ...].to(DEVICE)
-                assert h.ndim == 2
-                assert h.shape[1] == h_dim
-                _, z = self.encode_from_state(o, h)
-                state_vars.append(torch.argmax(z, dim=-1).detach().cpu().view(-1))
+            _, z = self.encode_from_state(obs.to(DEVICE), hidden_state.to(DEVICE))
 
-        return torch.stack(state_vars).numpy()
+            z = torch.argmax(z, dim=-1).detach().cpu().view(-1, self.z_layers).numpy()
+        return z
 
     def loss(self, batch_data: List[Tensor]) -> Tensor:
-        (obs, actions), _ = batch_data
+        (obs, _), _ = batch_data
         obs = obs.to(DEVICE).float()
-        actions = actions.to(DEVICE).float()
 
-        logits, z = self.encode_from_sequence(obs, actions)
+        logits, z = self.encode_from_sequence(obs)
 
         # flatten the embedding for the input to decoder
         z = z.view(-1, self.z_layers * self.z_dim).float()
