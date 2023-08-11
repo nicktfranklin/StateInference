@@ -169,7 +169,6 @@ class Decoder(MLP):
         dropout: float = 0.01,
     ):
         super().__init__(input_size, hidden_sizes, output_size, dropout)
-        self.net.pop(-1)
         self.net.append(torch.nn.Sigmoid())
 
     def loss(self, x, target):
@@ -418,10 +417,11 @@ class GruEncoder(ModelBase):
         x = torch.flatten(x, start_dim=2)
         assert x.shape[-1] == self.nin
 
-        if self.batch_first:
+        if not self.batch_first:
             x = torch.permute(x, (1, 0, 2))
 
         _, h_n = self.gru(x)
+
         return h_n.squeeze(0)
 
     def single_update(self, x: Tensor, h: Tensor) -> Tensor:
@@ -553,7 +553,10 @@ class RecurrentVae(StateVae):
         # use a loop to encode the sequences
         assert_correct_end_shape(obs, self.input_shape)
         logits = self.encoder.encode_sequence(obs)
-        logits = logits + self.rnn(logits)  # only use rnn additively on the embeddings
+
+        # only use rnn additively on the embeddings (and only the
+        # last time step is used in the output)
+        logits = logits[:, -1, :] + self.rnn(logits)
         z = self.reparameterize(logits.view(-1, self.z_layers, self.z_dim))
         return logits, z
 
@@ -563,7 +566,6 @@ class RecurrentVae(StateVae):
 
         logits = self.encoder(obs)
         logits = logits + self.rnn.single_update(logits, h)  # only use rnn additively
-
         z = self.reparameterize(logits.view(-1, self.z_layers, self.z_dim))
         return logits, z
 
@@ -620,6 +622,7 @@ class RecurrentVae(StateVae):
         return z
 
     def loss(self, batch_data: List[Tensor]) -> Tensor:
+        self.train()
         (obs, _), _ = batch_data
         obs = obs.to(DEVICE).float()
 
@@ -627,7 +630,7 @@ class RecurrentVae(StateVae):
 
         # flatten the embedding for the input to decoder
         z = z.view(-1, self.z_layers * self.z_dim).float()
-
+        # raise
         # get the two components of the ELBO loss
         kl_loss = self.kl_loss(logits)
         recon_loss = self.decoder.loss(z, obs[:, -1, ...])
