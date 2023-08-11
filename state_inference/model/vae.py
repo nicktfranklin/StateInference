@@ -579,8 +579,14 @@ class RecurrentVae(StateVae):
         return torch.stack(logits), torch.stack(z)
 
     def forward(self, obs: Tensor) -> Tuple[Tensor, Tensor]:
-        x = self.encode(obs)
-        logits, z = self.encode_from_sequence(x)
+        """
+        Args:
+         -obs (NxLxHxWxC) tensor
+        """
+        assert_correct_end_shape(obs, self.input_shape)
+        assert obs.ndim == 5
+
+        logits, z = self.encode_from_sequence(obs)
         return (logits, z), self.decode(z).view(
             obs[:, -1, ...].shape
         )  # preserve original shape
