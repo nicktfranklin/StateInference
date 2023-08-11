@@ -73,7 +73,7 @@ class MLP(ModelBase):
 
         # define a simple MLP neural net
         self.net = []
-        hidden_size = [self.nin] + hidden_sizes + [self.nout]
+        hidden_size = [self.nin] + hidden_sizes
         for h0, h1 in zip(hidden_size, hidden_size[1:]):
             self.net.extend(
                 [
@@ -148,8 +148,15 @@ class CnnEncoder(ModelBase):
         )
 
         # self.linear = nn.Linear(output_size, output_size)
+        self.input_shape = (height, width, input_channels)
 
     def forward(self, x):
+        check_tensor_dims(x, self.input_shape)
+        assert x.ndim <= 4, "Conv Net only accepts 3d or 4d input"
+
+        # permute to (N, C, H, W) or (C, H, W)
+        x = x.permute(*range(x.ndim - 3), x.ndim - 1, x.ndim - 3, x.ndim - 2)
+
         return self.linear(self.cnn(x))
 
 
@@ -488,6 +495,11 @@ class RecurrentVae(StateVae):
             encoder, decoder, z_dim, z_layers, beta, tau, gamma, input_shape
         )
         self.rnn = rnn
+        self.logit_layer = nn.Linear(z_dim, z_dim)
+
+    def reparameterize(self, logits):
+        logits = self.logit_layer(logits)
+        return super().reparameterize(logits)
 
     def encode_from_sequence(self, obs: Tensor, actions: Tensor) -> Tensor:
         # use a loop to encode the sequences
