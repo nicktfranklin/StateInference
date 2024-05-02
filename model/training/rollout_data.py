@@ -42,16 +42,33 @@ class RolloutDataset:
         self.truncated.append(obs_tuple[3])
         self.info.append(obs_tuple[4])
 
-    def get_dataset(self) -> dict[str, Union[Any, Tensor]]:
-        """This is meant to be consistent with the dataset in d4RL"""
+    def get_dataset(self, n_obs: int | None = None) -> dict[str, Union[Any, Tensor]]:
+        """This is meant to be consistent with the dataset in d4RL
+
+        n_obs: (int) pull the last n_obs from the buffer, if None, pull all
+        """
+        if n_obs is not None:
+            obs = self.obs[-n_obs:]
+            next_obs = self.next_obs[-n_obs:]
+            action = self.action[-n_obs:]
+            reward = self.reward[-n_obs:]
+            terminated = self.terminated[-n_obs:]
+            truncated = self.truncated[-n_obs:]
+        else:
+            obs = self.obs
+            next_obs = self.next_obs
+            action = self.action
+            reward = self.reward
+            terminated = self.terminated
+            truncated = self.truncated
 
         return {
-            "observations": np.stack(self.obs),
-            "next_observations": np.stack(self.next_obs),
-            "actions": np.stack(self.action),
-            "rewards": np.stack(self.reward),
-            "terminated": np.stack(self.terminated),
-            "timouts": np.stack(self.truncated),  # timeouts are truncated
+            "observations": np.stack(obs),
+            "next_observations": np.stack(next_obs),
+            "actions": np.stack(action),
+            "rewards": np.stack(reward),
+            "terminated": np.stack(terminated),
+            "timeouts": np.stack(truncated),  # timeouts are truncated
             "infos": self.info,
         }
 

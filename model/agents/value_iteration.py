@@ -5,8 +5,6 @@ import gymnasium as gym
 import numpy as np
 import torch
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.monitor import Monitor
 from torch import FloatTensor, Tensor
 from torch.utils.data import DataLoader
 
@@ -49,11 +47,11 @@ class ValueIterationAgent(BaseAgent):
         n_iter: int = 1000,
         softmax_gain: float = 1.0,
         epsilon: float = 0.05,
-        n_steps: Optional[int] = None,  # None => only update at the end,
-        n_epochs: int = 10,
+        n_steps: Optional[int] = 2048,  # None => only update at the end,
+        n_epochs: int = 1,
         alpha: float = 0.05,
         dyna_updates: int = 5,
-        persistant_optim: bool = False,
+        persistant_optim: bool = True,
     ) -> None:
         """
         :param n_steps: The number of steps to run for each environment per update
@@ -190,7 +188,7 @@ class ValueIterationAgent(BaseAgent):
 
     def train_vae(self, buffer: RolloutDataset, progress_bar: bool = True):
         # prepare the dataset for training the VAE
-        dataset = buffer.get_dataset()
+        dataset = buffer.get_dataset(self.n_steps)
         obs = convert_8bit_to_float(torch.tensor(dataset["observations"])).to(DEVICE)
         obs = obs.permute(0, 3, 1, 2)  # -> NxCxHxW
 
