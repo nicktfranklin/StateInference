@@ -1,6 +1,7 @@
 import sys
 from typing import Any, Dict, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -196,7 +197,7 @@ class StateVae(nn.Module):
                 + f"KL-Loss: {kl_loss:.4f}, beta: {self.beta}"
             )
 
-    def get_state(self, x):
+    def get_state(self, x) -> np.ndarray:
         """
         Assume input shape of NxCxHxW or CxHxW.
         """

@@ -16,6 +16,7 @@ from model.agents.utils.mdp import (
     value_iteration,
 )
 from model.agents.utils.policy import SoftmaxPolicy
+from model.agents.utils.state_hash import StateHash
 from model.state_inference.vae import StateVae
 from model.training.rollout_data import OaroTuple, RolloutDataset
 from model.training.value_iteration import ViDataset
@@ -84,11 +85,8 @@ class ValueIterationAgent(BaseAgent):
 
         assert epsilon >= 0 and epsilon < 1.0
 
-        self.hash_vector = np.array(
-            [
-                self.state_inference_model.z_dim**ii
-                for ii in range(self.state_inference_model.z_layers)
-            ]
+        self.state_hash = StateHash(
+            self.state_inference_model.z_dim, self.state_inference_model.z_layers
         )
 
         self.num_timesteps = 0
@@ -111,7 +109,7 @@ class ValueIterationAgent(BaseAgent):
         obs_ = self._preprocess_obs(obs)
         with torch.no_grad():
             z = self.state_inference_model.get_state(obs_)
-        return z.dot(self.hash_vector)
+        return self.state_hash(z)
 
     def update_rollout_policy(self, rollout_buffer: RolloutDataset) -> None:
         # the rollout policy is a DYNA variant
@@ -216,6 +214,7 @@ class ValueIterationAgent(BaseAgent):
         # re-estimate the reward and transition functions
         self.reward_estimator.reset()
         self.transition_estimator.reset()
+        self.state_hash.reset()
 
         dataset = buffer.get_dataset()
 
