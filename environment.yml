@@ -15,3 +15,4 @@ dependencies:
     - stable-baselines3
     - ipywidgets
     - rich
+    - python-louvain
