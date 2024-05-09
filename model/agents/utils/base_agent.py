@@ -196,9 +196,11 @@ class BaseAgent(ABC):
         buffer: RolloutDataset,
         n: int,
         epsilon: float = 0.05,
+        start_state: Optional[int] = None,
     ):
         # collect data
-        obs = task.reset()[0]
+        options = {"start_state": start_state} if start_state else None
+        obs = task.reset(options=options)[0]
         done = False
 
         for _ in tqdm(range(n), desc="Collection rollouts"):
@@ -219,6 +221,6 @@ class BaseAgent(ABC):
             done = outcome_tuple[2]
 
             if done:
-                obs = task.reset()[0]
+                obs = task.reset(options=options)[0]
 
         return buffer

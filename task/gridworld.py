@@ -130,8 +130,20 @@ class GridWorldEnv(gym.Env):
         )
 
     # Key methods from Gymnasium:
-    def reset(self, seed=None, options=None) -> tuple[np.ndarray, Dict[str, Any]]:
-        self.current_state = self._get_initial_state()
+    def reset(
+        self, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[np.ndarray, Dict[str, Any]]:
+        if seed is not None:
+            np.random.seed(seed)
+        if options is not None:
+            assert isinstance(options, dict)
+            initial_state = options.get("initial_state", None)
+        else:
+            initial_state = None
+
+        self.current_state = (
+            initial_state if initial_state is not None else self._get_initial_state()
+        )
         self.step_counter = 0
 
         return self.generate_observation(self.current_state), dict()
