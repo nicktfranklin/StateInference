@@ -93,7 +93,10 @@ def train_agent(configs: Config):
     )
 
     agent.learn(
-        total_timesteps=configs.n_training_samples, progress_bar=True, callback=callback
+        total_timesteps=configs.n_training_samples,
+        progress_bar=True,
+        callback=callback,
+        reset_buffer=False,
     )
 
     data = {"rewards": callback.rewards, "evaluations": callback.evaluations}
