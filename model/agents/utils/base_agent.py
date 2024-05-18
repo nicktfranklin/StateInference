@@ -199,7 +199,7 @@ class BaseAgent(ABC):
         start_state: Optional[int] = None,
     ):
         # collect data
-        options = {"start_state": start_state} if start_state else None
+        options = {"initial_state": start_state} if start_state is not None else None
         obs = task.reset(options=options)[0]
         done = False
 
