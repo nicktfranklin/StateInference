@@ -222,7 +222,7 @@ class StateVae(nn.Module):
             return self.decode(z).detach().cpu().numpy()
 
     def anneal_tau(self):
-        if self.tau_annealing_rate - 1 < 1e-4:
+        if self.tau_annealing_rate < 1e-4:
             return
         self.tau *= self.tau_annealing_rate
 
