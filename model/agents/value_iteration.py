@@ -210,6 +210,9 @@ class ValueIterationAgent(BaseAgent):
 
     def update_from_batch(self, buffer: RolloutDataset, progress_bar: bool = False):
         self.train_vae(buffer, progress_bar=progress_bar)
+        self.re_estimate_mdp(buffer)
+
+    def re_estimate_mdp(self, buffer: RolloutDataset, gamma: None | float = None):
 
         # re-estimate the reward and transition functions
         self.reward_estimator.reset()
@@ -244,7 +247,7 @@ class ValueIterationAgent(BaseAgent):
         self.policy.q_values, value_function = value_iteration(
             T=self.transition_estimator.get_transition_functions(),
             R=self.reward_estimator,
-            gamma=self.gamma,
+            gamma=gamma if gamma else self.gamma,
             iterations=self.n_iter,
         )
         self.value_function = value_function
