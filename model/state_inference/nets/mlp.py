@@ -76,32 +76,3 @@ class MlpDecoder(nn.Module):
     def forward(self, x):
         output = F.sigmoid(self.net(x))
         return output.view(output.shape[0], *self.output_shape)
-
-
-class MlpDecoderWithActions(nn.Module):
-    def __init__(
-        self,
-        embedding_size: int,
-        n_actions: int,
-        hidden_sizes: List[int],
-        ouput_size: int,
-    ):
-        super().__init__()
-        self.mlp = MlpDecoder(
-            embedding_size,
-            hidden_sizes,
-            ouput_size,
-        )
-        self.latent_embedding = nn.Linear(embedding_size, embedding_size)
-        self.action_embedding = nn.Linear(n_actions, embedding_size)
-
-    def forward(self, latents, action):
-        x = self.latent_embedding(latents) + self.action_embedding(action)
-        x = F.relu(x)
-        x = self.mlp(x)
-        return x
-
-    def loss(self, latents, actions, targets):
-        y_hat = self(latents, actions)
-        # return y_hat
-        return F.mse_loss(y_hat, torch.flatten(targets, start_dim=1))
