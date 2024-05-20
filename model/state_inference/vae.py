@@ -18,7 +18,6 @@ from model.state_inference.constants import (
     VAE_TAU,
     VAE_TAU_ANNEALING_RATE,
 )
-from model.state_inference.nets.mlp import MlpDecoderWithActions
 from utils.pytorch_utils import (
     DEVICE,
     assert_correct_end_shape,
