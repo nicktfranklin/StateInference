@@ -1,7 +1,6 @@
 import random
 from typing import Any, Dict, Hashable, Optional
 
-import gymnasium as gym
 import numpy as np
 import torch
 from stable_baselines3.common.callbacks import BaseCallback

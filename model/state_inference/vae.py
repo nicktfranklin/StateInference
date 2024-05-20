@@ -27,7 +27,7 @@ from utils.pytorch_utils import (
 )
 
 # needed to import the Encoder/Decoder from config
-from .nets import *
+from ..nets import *
 
 
 def unit_test_vae_reconstruction(model, input_shape):
