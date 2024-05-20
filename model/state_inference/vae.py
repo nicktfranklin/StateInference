@@ -172,13 +172,15 @@ class StateVae(nn.Module):
         # sum loss over dimensions in each example, average over batch
         return mse_loss.view(x.shape[0], -1).sum(1).mean()
 
-    def loss(self, x: Tensor) -> Tensor:
+    def loss(self, x: Tensor, target: Tensor | None = None) -> Tensor:
         x = x.to(DEVICE).float()
         (logits, _), x_hat = self(x)
 
         # get the two components of the ELBO loss
         kl_loss = self.kl_loss(logits)
-        recon_loss = self.recontruction_loss(x, x_hat)
+
+        target = target if target is not None else x
+        recon_loss = self.recontruction_loss(target, x_hat)
 
         return recon_loss + kl_loss * self.beta
 
