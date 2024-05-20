@@ -8,6 +8,7 @@ from torch import FloatTensor, Tensor
 from torch.utils.data import DataLoader
 
 import model.state_inference.vae
+from model.agents.base_state_agent import BaseStateAgent
 from model.agents.utils.base_agent import BaseAgent
 from model.agents.utils.mdp import (
     TabularRewardEstimator,
@@ -23,7 +24,7 @@ from task.utils import ActType
 from utils.pytorch_utils import DEVICE, convert_8bit_to_float
 
 
-class ValueIterationAgent(BaseAgent):
+class ValueIterationAgent(BaseStateAgent):
     TRANSITION_MODEL_CLASS = TabularStateActionTransitionEstimator
     REWARD_MODEL_CLASS = TabularRewardEstimator
     POLICY_CLASS = SoftmaxPolicy
@@ -56,14 +57,8 @@ class ValueIterationAgent(BaseAgent):
         """
         :param n_steps: The number of steps to run for each environment per update
         """
-        super().__init__(task)
-        self.state_inference_model = state_inference_model.to(DEVICE)
+        super().__init__(task, state_inference_model, optim_kwargs)
 
-        self.optim = (
-            self.state_inference_model.configure_optimizers(optim_kwargs)
-            if persistant_optim
-            else None
-        )
         self.grad_clip = grad_clip
         self.batch_size = batch_size
         self.gamma = gamma
@@ -71,8 +66,6 @@ class ValueIterationAgent(BaseAgent):
         self.n_steps = n_steps
         self.n_epochs = n_epochs
         self.alpha = alpha
-
-        self.env = task
 
         self.transition_estimator = self.TRANSITION_MODEL_CLASS()
         self.reward_estimator = self.REWARD_MODEL_CLASS()
@@ -84,31 +77,15 @@ class ValueIterationAgent(BaseAgent):
 
         assert epsilon >= 0 and epsilon < 1.0
 
-        self.state_hash = StateHash(
-            self.state_inference_model.z_dim, self.state_inference_model.z_layers
-        )
-
         self.num_timesteps = 0
         self.value_function = None
         self.n_dyna_updates = dyna_updates
 
-    def _init_state(self):
-        return None
+        if persistant_optim is not None:
+            self.optim = None
 
-    def _preprocess_obs(self, obs: Tensor) -> Tensor:
-        # take in 8bit with shape NxHxWxC
-        # convert to float with shape NxCxHxW
-        obs = convert_8bit_to_float(obs)
-        if obs.ndim == 3:
-            return obs.permute(2, 0, 1)
-        return obs.permute(0, 3, 1, 2)
-
-    def _get_state_hashkey(self, obs: Tensor):
-        obs = obs if isinstance(obs, Tensor) else torch.tensor(obs)
-        obs_ = self._preprocess_obs(obs)
-        with torch.no_grad():
-            z = self.state_inference_model.get_state(obs_)
-        return self.state_hash(z)
+    def _configure_optimizers(self, optim_kwargs):
+        return self.state_inference_model.configure_optimizers(optim_kwargs)
 
     def update_rollout_policy(self, rollout_buffer: RolloutDataset) -> None:
         # the rollout policy is a DYNA variant
