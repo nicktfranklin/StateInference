@@ -1,30 +1,32 @@
 from typing import Any, Dict, Optional
 
+import gymnasium as gym
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.policies import ActorCriticPolicy
 from torch import FloatTensor, Tensor
 
 import model.state_inference.vae
 from model.agents.base_state_agent import BaseStateAgent
-from model.agents.utils.state_hash import StateHash
 from model.state_inference.vae import StateVae
 from model.training.rollout_data import RolloutDataset
 from task.utils import ActType
-from utils.pytorch_utils import DEVICE, convert_8bit_to_float
 
 
 class DiscretePPO(BaseStateAgent):
 
     def __init__(
         self,
-        task,
+        env: gym.Env,
         state_inference_model: StateVae,
+        policy: ActorCriticPolicy,
         optim_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         :param n_steps: The number of steps to run for each environment per update
         """
-        super().__init__(task, state_inference_model, optim_kwargs)
+        super().__init__(env, state_inference_model, optim_kwargs)
+        self.get_policy = policy
 
     def get_policy(self, obs: Tensor):
         raise NotImplementedError()
@@ -38,6 +40,26 @@ class DiscretePPO(BaseStateAgent):
         raise NotImplementedError()
 
     def update_from_batch(self, buffer: RolloutDataset, progress_bar: bool = False):
+        """
+        Pseudoe code steps for the inner loop:
+
+        1) Compute Rewards to go
+        2) Compute Advantage based on current value function
+        3) Update the policy by maximizing the PPO loss
+
+        4) Update the value function by minimizing the value loss"""
+        # 1) Compute Rewards to go
+        rewards_to_go = self.compute_rewards_to_go(buffer)
+
+        # 2) Compute Advantage based on current value function
+        advantages = self.compute_advantages(buffer)
+
+        # 3) Update the policy by maximizing the PPO loss
+        self.update_policy(buffer, advantages)
+
+        # 4) Update the value function by minimizing the value loss
+        self.update_value_function(buffer, rewards_to_go)
+
         raise NotImplementedError()
 
     def learn(
