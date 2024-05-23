@@ -1,13 +1,13 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
+import gymnasium as gym
 import torch
 from torch import Tensor
 
 from model.agents.utils.base_agent import BaseAgent
 from model.agents.utils.state_hash import StateHash
 from model.state_inference.vae import StateVae
-from task.utils import ActType
 from utils.pytorch_utils import DEVICE, convert_8bit_to_float
 
 
@@ -15,18 +15,16 @@ class BaseStateAgent(BaseAgent, ABC):
 
     def __init__(
         self,
-        task,
+        env: gym.Env,
         state_inference_model: StateVae,
         optim_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         :param n_steps: The number of steps to run for each environment per update
         """
-        super().__init__(task)
+        super().__init__(env)
         self.state_inference_model = state_inference_model.to(DEVICE)
         self.optim = self._configure_optimizers(optim_kwargs)
-
-        self.env = task
 
         self.state_hash = StateHash(
             self.state_inference_model.z_dim, self.state_inference_model.z_layers

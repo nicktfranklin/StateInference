@@ -1,6 +1,7 @@
 import random
 from typing import Any, Dict, Hashable, Optional
 
+import gymnasium as gym
 import numpy as np
 import torch
 from stable_baselines3.common.callbacks import BaseCallback
@@ -9,14 +10,12 @@ from torch.utils.data import DataLoader
 
 import model.state_inference.vae
 from model.agents.base_state_agent import BaseStateAgent
-from model.agents.utils.base_agent import BaseAgent
 from model.agents.utils.mdp import (
     TabularRewardEstimator,
     TabularStateActionTransitionEstimator,
     value_iteration,
 )
 from model.agents.utils.policy import SoftmaxPolicy
-from model.agents.utils.state_hash import StateHash
 from model.state_inference.vae import StateVae
 from model.training.rollout_data import OaroTuple, RolloutDataset
 from model.training.value_iteration import ViDataset
@@ -39,7 +38,7 @@ class ValueIterationAgent(BaseStateAgent):
 
     def __init__(
         self,
-        task,
+        env: gym.Env,
         state_inference_model: StateVae,
         optim_kwargs: Optional[Dict[str, Any]] = None,
         grad_clip: bool = True,
@@ -57,7 +56,7 @@ class ValueIterationAgent(BaseStateAgent):
         """
         :param n_steps: The number of steps to run for each environment per update
         """
-        super().__init__(task, state_inference_model, optim_kwargs)
+        super().__init__(env, state_inference_model, optim_kwargs)
 
         self.grad_clip = grad_clip
         self.batch_size = batch_size
@@ -72,7 +71,7 @@ class ValueIterationAgent(BaseStateAgent):
         self.policy = self.POLICY_CLASS(
             beta=softmax_gain,
             epsilon=epsilon,
-            n_actions=task.action_space.n,
+            n_actions=env.action_space.n,
         )
 
         assert epsilon >= 0 and epsilon < 1.0

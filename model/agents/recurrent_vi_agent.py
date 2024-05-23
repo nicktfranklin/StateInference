@@ -1,8 +1,8 @@
 from typing import Any, Dict, Hashable, Optional
 
+import gymnasium as gym
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch import FloatTensor, Tensor
 from torch.utils.data import DataLoader
 
@@ -24,13 +24,13 @@ from model.state_inference.recurrent_vae import LstmVae
 from model.training.recurrent import RecurrentDataset
 from model.training.rollout_data import OaroTuple, RolloutDataset
 from task.utils import ActType
-from utils.pytorch_utils import DEVICE, convert_8bit_to_float
+from utils.pytorch_utils import convert_8bit_to_float
 
 
 class RecurrentViAgent(ValueIterationAgent):
     def __init__(
         self,
-        task,
+        env: gym.Env,
         state_inference_model: LstmVae,
         optim_kwargs: Dict[str, Any] | None = None,
         grad_clip: bool = GRAD_CLIP,
@@ -46,7 +46,7 @@ class RecurrentViAgent(ValueIterationAgent):
         max_sequence_len: int = MAX_SEQUENCE_LEN,
     ) -> None:
         super().__init__(
-            task=task,
+            env=env,
             state_inference_model=state_inference_model,
             optim_kwargs=optim_kwargs,
             grad_clip=grad_clip,

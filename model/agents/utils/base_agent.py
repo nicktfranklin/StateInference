@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import Callable, Iterable, List, Optional, Union
+from typing import Iterable, List, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -15,7 +15,7 @@ from stable_baselines3.common.callbacks import (
 from stable_baselines3.common.type_aliases import MaybeCallback
 from stable_baselines3.common.vec_env import VecEnv
 from torch import FloatTensor
-from tqdm import tqdm, trange
+from tqdm import tqdm
 
 from model.training.rollout_data import RolloutDataset
 from task.gridworld import ActType, ObsType
@@ -25,20 +25,23 @@ from utils.sampling_functions import inverse_cmf_sampler
 class BaseAgent(ABC):
     def __init__(self, task: VecEnv | gym.Env) -> None:
         super().__init__()
-        self.task = task if isinstance(task, gym.Env) else task.envs[0]
+        self.env = task if isinstance(task, gym.Env) else task.envs[0]
         self.num_timesteps = 0
+
+        self.observation_space = task.observation_space
+        self.action_space = task.action_space
 
     @abstractmethod
     def get_pmf(self, x: FloatTensor) -> FloatTensor: ...
 
     def get_env(self) -> VecEnv:
         ## used for compatibility with stablebaseline code, use with caution
-        if isinstance(self.task, VecEnv):
-            return self.task
-        return BaseAlgorithm._wrap_env(self.task, verbose=False, monitor_wrapper=True)
+        if isinstance(self.env, VecEnv):
+            return self.env
+        return BaseAlgorithm._wrap_env(self.env, verbose=False, monitor_wrapper=True)
 
     def get_task(self) -> gym.Env:
-        return self.task if isinstance(self.task, gym.Env) else self.envs[0]
+        return self.env if isinstance(self.env, gym.Env) else self.envs[0]
 
     @abstractmethod
     def predict(
