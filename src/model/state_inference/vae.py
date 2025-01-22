@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
-from torch import FloatTensor, Tensor, nn
+from torch import FloatTensor, LongTensor, Tensor, nn
 from torch.distributions.categorical import Categorical
 from torch.distributions.kl import kl_divergence
 from torch.optim import Optimizer
@@ -66,6 +66,13 @@ class StateVae(nn.Module):
         self.tau_annealing_rate = tau_annealing_rate
         self.input_shape = input_shape
         self.tau_min = tau_min
+        self.action_embedding = nn.Embedding(4, z_dim * z_layers, device=DEVICE)
+        self.join_action_and_state = nn.Sequential(
+            nn.Linear(z_dim * z_layers * 2, z_dim * z_layers),
+            nn.ReLU(),
+            nn.Linear(z_dim * z_layers, z_dim * z_layers),
+            nn.ReLU(),
+        )
 
         if tau_is_parameter:
             self.tau = torch.nn.Parameter(torch.tensor([tau]), requires_grad=True)
@@ -146,10 +153,16 @@ class StateVae(nn.Module):
     def flatten_z(self, z):
         return z.view(-1, self.z_layers * self.z_dim)
 
-    def decode(self, z):
-        return self.decoder(self.flatten_z(z).float())
+    def decode(self, z, action: Tensor | None = None) -> Tensor:
+        z = self.flatten_z(z)
+        if action is not None:
+            action_embedding = self.action_embedding(action.to(DEVICE))
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+            # use MLP with residual connection to combine action and state
+            z = self.join_action_and_state(torch.cat([z, action_embedding], dim=1)) + z
+        return self.decoder(z)
+
+    def forward(self, x: Tensor, a: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         """
         Forward pass of the Variational Autoencoder (VAE) model.
 
@@ -163,8 +176,9 @@ class StateVae(nn.Module):
 
         """
         logits, z = self.encode(x)
-        x_hat = self.decode(z)
-        return (logits, z), x_hat.view(x.shape)  # preserve original shape
+        x_hat = self.decode(z, a)
+
+        return (logits, z), x_hat.view(x.shape)
 
     def kl_loss(self, logits):
         """
@@ -189,9 +203,11 @@ class StateVae(nn.Module):
         # sum loss over dimensions in each example, average over batch
         return mse_loss.view(x.shape[0], -1).sum(1).mean()
 
-    def loss(self, x: FloatTensor, target: FloatTensor = None) -> FloatTensor:
+    def loss(
+        self, x: FloatTensor, a: LongTensor, target: FloatTensor = None
+    ) -> FloatTensor:
         x = x.to(DEVICE).float()
-        (logits, _), y_hat = self(x)
+        (logits, _), y_hat = self(x, a)
 
         if target is None:
             target = x

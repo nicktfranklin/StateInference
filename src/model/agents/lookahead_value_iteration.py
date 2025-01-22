@@ -3,9 +3,11 @@ from typing import Any, Dict, Hashable, Optional
 
 import numpy as np
 import torch
+import torch.nn as nn
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.distributions import CategoricalDistribution
 from torch import FloatTensor, Tensor
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from tqdm import trange
 
@@ -81,6 +83,18 @@ class LookaheadViAgent(BaseVaeAgent):
             learning_rate=alpha,
             dyna_updates=dyna_updates,
         )
+
+        z = self.state_inference_model.z_layers * self.state_inference_model.z_dim
+        self.actor = nn.Sequential(
+            nn.Linear(z, z), nn.ReLU(), nn.Linear(z, n_actions)
+        ).to(DEVICE)
+        self.critic = nn.Sequential(nn.Linear(z, z), nn.ReLU(), nn.Linear(z, 1)).to(
+            DEVICE
+        )
+        self.ac_optim = torch.optim.Adam(
+            list(self.actor.parameters()) + list(self.critic.parameters()), lr=alpha
+        )
+
         # self.model_free_agent = ModelFreeAgent(n_actions=n_actions, learning_rate=alpha)
         self.dist = CategoricalDistribution(action_dim=n_actions)
         self.softmax_gain = softmax_gain
@@ -163,13 +177,26 @@ class LookaheadViAgent(BaseVaeAgent):
         #     self.model_free_agent.update(s, a, r, sp)
 
     def get_policy(self, obs: Tensor):
-        s = self._get_state_hashkey(obs)
-        if s == -1:
-            return self.dist.proba_distribution(
-                torch.ones(self.env.action_space.n) / self.env.action_space.n
+        self.eval()
+        obs_ = self._preprocess_obs(obs)
+        with torch.no_grad():
+            self.state_inference_model.eval()
+            # print(obs_.to(DEVICE).flatten(1).shape)
+            _, z = self.state_inference_model.encode(obs_.to(DEVICE))
+            action_logits = self.actor(z.float().flatten(1))
+            pmf = (
+                torch.exp(action_logits - torch.logsumexp(action_logits, dim=-1))
+                .detach()
+                .cpu()
             )
-        q = self.model_based_agent.get_q_values(s)
-        return self.dist.proba_distribution(q * self.softmax_gain)
+
+        # s = self._get_state_hashkey(obs)
+        # if s == -1:
+        #     return self.dist.proba_distribution(
+        #         torch.ones(self.env.action_space.n) / self.env.action_space.n
+        #     )
+        # q = self.model_based_agent.get_q_values(s)
+        return self.dist.proba_distribution(pmf)
 
     def get_pmf(self, obs: FloatTensor) -> np.ndarray:
         if obs.ndim == 3:
@@ -203,7 +230,7 @@ class LookaheadViAgent(BaseVaeAgent):
 
         # We use a specific dataset for the VAE training
         dataloader = DataLoader(
-            VaeDataset(obs, next_obs),
+            VaeDataset(obs, dataset["actions"], next_obs),
             batch_size=self.batch_size,
             shuffle=True,
             drop_last=True,
@@ -222,10 +249,10 @@ class LookaheadViAgent(BaseVaeAgent):
         for _ in iterator:
             self.state_inference_model.train()
 
-            for obs, next_obs in dataloader:
+            for obs, action, next_obs in dataloader:
 
                 optim.zero_grad()
-                loss = self.state_inference_model.loss(obs, next_obs)
+                loss = self.state_inference_model.loss(obs, action, next_obs)
                 loss.backward()
 
                 if self.grad_clip is not None:
@@ -275,6 +302,96 @@ class LookaheadViAgent(BaseVaeAgent):
 
         self.model_based_agent.estimate()
         self.value_function = self.model_based_agent.value_function
+
+        # reverse the state indexer
+        states, next_states, values = [], [], []
+        for s0, sp0 in zip(s, sp):
+            z = (
+                F.one_hot(
+                    self.state_indexer.lookup(s0), self.state_inference_model.z_dim
+                )
+                .view(-1)
+                .float()
+                .to(DEVICE)
+            )
+            zp = (
+                F.one_hot(
+                    self.state_indexer.lookup(sp0), self.state_inference_model.z_dim
+                )
+                .view(-1)
+                .float()
+                .to(DEVICE)
+            )
+            states.append(z)
+            next_states.append(zp)
+
+            values.append(self.value_function[s0].to(DEVICE))
+        states = torch.stack(states)
+        next_states = torch.stack(next_states)
+        values = torch.stack(values)
+
+        # make a new dataloader
+        class MyDataset(torch.utils.data.Dataset):
+            def __init__(self, states, next_states, values, rewards, actions):
+                self.s = states
+                self.sp = next_states
+                self.a = actions
+                self.r = rewards
+                self.v = values
+
+            def __len__(self):
+                return len(self.s)
+
+            def __getitem__(self, idx):
+                return {
+                    "state": self.s[idx],
+                    "next_state": self.sp[idx],
+                    "action": self.a[idx],
+                    "reward": self.r[idx],
+                    "values": self.v[idx],
+                }
+
+        # print(states, next_states, values, r, a)
+        ds = MyDataset(
+            states,
+            next_states,
+            values,
+            torch.tensor(r).to(DEVICE),
+            torch.tensor(a).to(DEVICE),
+        )
+        dataloader = DataLoader(ds, batch_size=self.batch_size, shuffle=True)
+        self.update_actor_critic(dataloader)
+
+    def update_actor_critic(self, dataloader):
+
+        self.actor.train()
+        self.critic.train()
+
+        optim = self.ac_optim
+        for _ in range(self.n_epochs):
+            for batch in dataloader:
+
+                log_probs = self.actor(batch["state"])[
+                    torch.arange(batch["state"].shape[0]), batch["action"]
+                ]
+                values = self.critic(batch["state"])
+
+                # compute the advantage
+                advantage = batch["reward"] - values
+
+                # compute the actor loss
+                actor_loss = -(log_probs * advantage.detach()).mean()
+
+                # compute the critic loss
+                critic_loss = nn.functional.mse_loss(
+                    batch["values"].view(-1), values.view(-1)
+                )
+
+                optim.zero_grad()
+                loss = actor_loss + critic_loss
+                loss.backward()
+
+                optim.step()
 
     def learn(
         self,
