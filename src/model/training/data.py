@@ -27,15 +27,23 @@ class VaeDataset(torch.utils.data.Dataset):
         obs: torch.Tensor,
         actions: torch.Tensor,
         next_obs: torch.Tensor | None = None,
+        rewards: torch.Tensor | None = None,
     ):
         self.obs = obs
         self.actions = actions
         self.next_obs = next_obs
+        self.rewards = rewards
 
     def __len__(self):
         return len(self.obs)
 
     def __getitem__(self, idx):
-        if self.next_obs is None:
-            return self.obs[idx]
-        return self.obs[idx], self.actions[idx], self.next_obs[idx]
+        output = {"obs": self.obs[idx], "actions": self.actions[idx]}
+        if self.next_obs is not None:
+            output["next_obs"] = self.next_obs[idx]
+        if self.rewards is not None:
+            output["rewards"] = self.rewards[idx]
+        return output
+
+    def collate_fn(self, batch):
+        return {k: torch.stack([d[k] for d in batch]) for k in batch[0]}

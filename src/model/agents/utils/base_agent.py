@@ -354,6 +354,8 @@ class BaseAgent(ABC):
         ):
             mdp.update(s.item(), a.item(), r.item(), sp.item(), done.item())
 
+        mdp.estimate()
+
         return mdp
 
         # value_function = value_iteration(

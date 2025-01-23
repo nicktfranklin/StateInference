@@ -177,32 +177,19 @@ class LookaheadViAgent(BaseVaeAgent):
         #     self.model_free_agent.update(s, a, r, sp)
 
     def get_policy(self, obs: Tensor):
-        self.eval()
-        obs_ = self._preprocess_obs(obs)
-        with torch.no_grad():
-            self.state_inference_model.eval()
-            # print(obs_.to(DEVICE).flatten(1).shape)
-            _, z = self.state_inference_model.encode(obs_.to(DEVICE))
-            action_logits = self.actor(z.float().flatten(1))
-            pmf = (
-                torch.exp(action_logits - torch.logsumexp(action_logits, dim=-1))
-                .detach()
-                .cpu()
+        s = self._get_state_hashkey(obs)
+        if s == -1:
+            return self.dist.proba_distribution(
+                torch.ones(self.env.action_space.n) / self.env.action_space.n
             )
-
-        # s = self._get_state_hashkey(obs)
-        # if s == -1:
-        #     return self.dist.proba_distribution(
-        #         torch.ones(self.env.action_space.n) / self.env.action_space.n
-        #     )
-        # q = self.model_based_agent.get_q_values(s)
-        return self.dist.proba_distribution(pmf)
+        q = self.model_based_agent.get_q_values(s)
+        return self.dist.proba_distribution(q * self.softmax_gain)
 
     def get_pmf(self, obs: FloatTensor) -> np.ndarray:
         if obs.ndim == 3:
             pass
         elif obs.ndim == 4 and obs.shape[0] > 1:
-            return np.stack([self.get_pmf(o) for o in obs])
+            return np.stack([self.get_pmf(o) for o in obs]).squeeze()
 
         return self.get_policy(obs).distribution.probs.clone().detach().numpy()
 
@@ -217,6 +204,22 @@ class LookaheadViAgent(BaseVaeAgent):
 
     def get_state_values(self) -> torch.Tensor:
         return self.model_free_agent.get_value_function()
+
+    def get_critic_values(self, obs: Tensor) -> torch.Tensor:
+        self.eval()
+        self.state_inference_model.eval()
+        with torch.no_grad():
+            _obs = self._preprocess_obs(obs).to(DEVICE).float()
+            _, z = self.state_inference_model.encode(_obs)
+            return self.critic(z.view(1, -1).float()).squeeze()
+
+    def get_actor_values(self, obs: Tensor) -> torch.Tensor:
+        self.eval()
+        self.state_inference_model.eval()
+        with torch.no_grad():
+            _obs = self._preprocess_obs(obs).to(DEVICE).float()
+            _, z = self.state_inference_model.encode(_obs)
+            return self.actor(z.view(1, -1).float()).squeeze()
 
     def train_vae(self, buffer: BaseBuffer, progress_bar: bool = True):
         # prepare the dataset for training the VAE
@@ -249,10 +252,12 @@ class LookaheadViAgent(BaseVaeAgent):
         for _ in iterator:
             self.state_inference_model.train()
 
-            for obs, action, next_obs in dataloader:
+            for batch in dataloader:
 
                 optim.zero_grad()
-                loss = self.state_inference_model.loss(obs, action, next_obs)
+                loss = self.state_inference_model.loss(
+                    batch["obs"], batch["actions"], batch["next_obs"]
+                )
                 loss.backward()
 
                 if self.grad_clip is not None:
@@ -374,17 +379,21 @@ class LookaheadViAgent(BaseVaeAgent):
                 log_probs = self.actor(batch["state"])[
                     torch.arange(batch["state"].shape[0]), batch["action"]
                 ]
-                values = self.critic(batch["state"])
+                with torch.no_grad():
+                    state_values = self.critic(batch["state"])
+                    next_state_values = self.critic(batch["next_state"])
 
                 # compute the advantage
-                advantage = batch["reward"] - values
+                advantage = (
+                    batch["reward"] + self.gamma * next_state_values - state_values
+                )
 
                 # compute the actor loss
                 actor_loss = -(log_probs * advantage.detach()).mean()
 
                 # compute the critic loss
                 critic_loss = nn.functional.mse_loss(
-                    batch["values"].view(-1), values.view(-1)
+                    batch["values"].view(-1), state_values.view(-1)
                 )
 
                 optim.zero_grad()

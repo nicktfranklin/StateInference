@@ -432,7 +432,7 @@ class ModelBasedAgent:
             return torch.zeros(self.n_actions, device=self.device)
         return self.q_values[state]
 
-    def get_policy(self, deterministic: bool = True, temperature: int = 1) -> Tensor:
+    def get_policy(self, deterministic: bool = True, temperature: int = 1.0) -> Tensor:
         """Get the current policy of the agent.
 
         Args:

@@ -1,3 +1,4 @@
+import math
 import sys
 from typing import Any, Dict, Optional, Tuple
 
@@ -37,6 +38,27 @@ def unit_test_vae_reconstruction(model, input_shape):
         ), f"Reconstruction Shape {tuple(x_hat.shape)} Doesn't match Input {input_shape}"
 
 
+class LowRankEmbedding(nn.Module):
+    def __init__(self, num_embeddings: int, n: int, rank: int | None = None):
+        super().__init__()
+        rank = rank if rank else int(math.log(n))
+
+        # Initialize U and V matrices for each embedding
+        self.U = nn.Parameter(torch.randn(num_embeddings, n, rank))
+        self.V = nn.Parameter(torch.randn(num_embeddings, rank, n))
+
+        self.n = n
+        self.rank = rank
+
+    def forward(self, indices):
+        # Get U and V for the requested indices
+        U_selected = self.U[indices]  # batch_size x n x rank
+        V_selected = self.V[indices]  # batch_size x rank x n
+
+        # Multiply to get low rank matrices
+        return torch.bmm(U_selected, V_selected)  # batch_size x n x n
+
+
 class StateVae(nn.Module):
     def __init__(
         self,
@@ -66,12 +88,17 @@ class StateVae(nn.Module):
         self.tau_annealing_rate = tau_annealing_rate
         self.input_shape = input_shape
         self.tau_min = tau_min
-        self.action_embedding = nn.Embedding(4, z_dim * z_layers, device=DEVICE)
+        self.action_embedding = LowRankEmbedding(4, z_dim * z_layers).to(DEVICE)
         self.join_action_and_state = nn.Sequential(
             nn.Linear(z_dim * z_layers * 2, z_dim * z_layers),
             nn.ReLU(),
             nn.Linear(z_dim * z_layers, z_dim * z_layers),
             nn.ReLU(),
+        )
+        self.reward_prediction_network = nn.Sequential(
+            nn.Linear(z_dim * z_layers * 2, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
         )
 
         if tau_is_parameter:
@@ -153,16 +180,11 @@ class StateVae(nn.Module):
     def flatten_z(self, z):
         return z.view(-1, self.z_layers * self.z_dim)
 
-    def decode(self, z, action: Tensor | None = None) -> Tensor:
+    def decode(self, z) -> Tensor:
         z = self.flatten_z(z)
-        if action is not None:
-            action_embedding = self.action_embedding(action.to(DEVICE))
-
-            # use MLP with residual connection to combine action and state
-            z = self.join_action_and_state(torch.cat([z, action_embedding], dim=1)) + z
         return self.decoder(z)
 
-    def forward(self, x: Tensor, a: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    def forward(self, x: Tensor, a: Tensor):
         """
         Forward pass of the Variational Autoencoder (VAE) model.
 
@@ -176,9 +198,22 @@ class StateVae(nn.Module):
 
         """
         logits, z = self.encode(x)
-        x_hat = self.decode(z, a)
+        z = self.flatten_z(z)
+        x_hat = self.decode(z)
 
-        return (logits, z), x_hat.view(x.shape)
+        n = self.z_layers * self.z_dim
+
+        # assume transitions between states, conditioned on actions, are linear
+        action_operator = self.action_embedding(a.to(DEVICE)).view(-1, n, n)
+        zp = torch.matmul(action_operator, z.unsqueeze(-1)).squeeze(-1)
+
+        # decode the predicted next state
+        x_next_hat = self.decode(zp)
+
+        # predict the reward for the state-transtion pair
+        r_hat = self.reward_prediction_network(torch.cat([z, zp], dim=1))
+
+        return (logits, z), x_hat.view(x.shape), x_next_hat.view(x.shape), r_hat
 
     def kl_loss(self, logits):
         """
@@ -204,17 +239,27 @@ class StateVae(nn.Module):
         return mse_loss.view(x.shape[0], -1).sum(1).mean()
 
     def loss(
-        self, x: FloatTensor, a: LongTensor, target: FloatTensor = None
+        self,
+        x: FloatTensor,
+        a: LongTensor,
+        target: FloatTensor = None,
+        reward: FloatTensor = None,
     ) -> FloatTensor:
         x = x.to(DEVICE).float()
-        (logits, _), y_hat = self(x, a)
+        (logits, _), x_hat, x_next_hat, r_hat = self(x, a)
 
         if target is None:
             target = x
 
         # get the two components of the ELBO loss
         kl_loss = self.kl_loss(logits)
-        recon_loss = self.recontruction_loss(target, y_hat)
+        recon_loss = self.recontruction_loss(x, x_hat) + self.recontruction_loss(
+            target, x_next_hat
+        )
+
+        if reward is not None:
+            reward_loss = F.mse_loss(r_hat, reward)
+            return recon_loss + kl_loss + reward_loss
 
         return recon_loss + kl_loss
 
