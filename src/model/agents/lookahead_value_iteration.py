@@ -380,21 +380,23 @@ class LookaheadViAgent(BaseVaeAgent):
                     torch.arange(batch["state"].shape[0]), batch["action"]
                 ]
                 with torch.no_grad():
-                    state_values = self.critic(batch["state"])
-                    next_state_values = self.critic(batch["next_state"])
+                    state_values = self.critic(batch["state"]).view(-1)
+                    next_state_values = self.critic(batch["next_state"]).view(-1)
 
                 # compute the advantage
-                advantage = (
+                advantages = (
                     batch["reward"] + self.gamma * next_state_values - state_values
+                )
+                # normalize the advantages
+                advantages = (advantages - advantages.mean()) / (
+                    advantages.std() + 1e-8
                 )
 
                 # compute the actor loss
-                actor_loss = -(log_probs * advantage.detach()).mean()
+                actor_loss = -(log_probs * advantages.detach()).mean()
 
                 # compute the critic loss
-                critic_loss = nn.functional.mse_loss(
-                    batch["values"].view(-1), state_values.view(-1)
-                )
+                critic_loss = nn.functional.mse_loss(batch["values"], state_values)
 
                 optim.zero_grad()
                 loss = actor_loss + critic_loss
