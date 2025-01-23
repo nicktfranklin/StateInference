@@ -85,14 +85,14 @@ class LookaheadViAgent(BaseVaeAgent):
         )
 
         z = self.state_inference_model.z_layers * self.state_inference_model.z_dim
-        self.actor = nn.Sequential(
-            nn.Linear(z, z), nn.ReLU(), nn.Linear(z, n_actions)
+        self.actor_net = nn.Sequential(
+            nn.Linear(z, z), nn.ReLU(), nn.Linear(z, n_actions), nn.LogSoftmax(dim=1)
         ).to(DEVICE)
         self.critic = nn.Sequential(nn.Linear(z, z), nn.ReLU(), nn.Linear(z, 1)).to(
             DEVICE
         )
         self.ac_optim = torch.optim.Adam(
-            list(self.actor.parameters()) + list(self.critic.parameters()), lr=alpha
+            list(self.actor_net.parameters()) + list(self.critic.parameters()), lr=alpha
         )
 
         # self.model_free_agent = ModelFreeAgent(n_actions=n_actions, learning_rate=alpha)
@@ -112,6 +112,10 @@ class LookaheadViAgent(BaseVaeAgent):
 
     def eval(self):
         self.state_inference_model.eval()
+
+    def actor(self, x):
+        x = self.actor_net(x)
+        return F.log_softmax(x, dim=1)
 
     @property
     def device(self):
@@ -221,6 +225,16 @@ class LookaheadViAgent(BaseVaeAgent):
             _, z = self.state_inference_model.encode(_obs)
             return self.actor(z.view(1, -1).float()).squeeze()
 
+    def eval(self):
+        self.state_inference_model.eval()
+        self.actor_net.eval()
+        self.critic.eval()
+
+    def train(self):
+        self.state_inference_model.train()
+        self.actor_net.train()
+        self.critic.train()
+
     def train_vae(self, buffer: BaseBuffer, progress_bar: bool = True):
         # prepare the dataset for training the VAE
         dataset = buffer.get_dataset()
@@ -249,9 +263,8 @@ class LookaheadViAgent(BaseVaeAgent):
         else:
             iterator = range(self.n_epochs)
 
+        self.train()
         for _ in iterator:
-            self.state_inference_model.train()
-
             for batch in dataloader:
 
                 optim.zero_grad()
@@ -271,6 +284,13 @@ class LookaheadViAgent(BaseVaeAgent):
 
     def update_from_batch(self, buffer: BaseBuffer, progress_bar: bool = False):
         self.train_vae(buffer, progress_bar=progress_bar)
+        dataloader = self.update_mb_agent(buffer)
+        self.update_actor_critic(dataloader)
+
+    def update_mb_agent(self, buffer: BaseBuffer):
+
+        ## prepare the dataset for training the actor-critic
+        self.eval()
 
         dataset = buffer.get_dataset()
 
@@ -329,7 +349,6 @@ class LookaheadViAgent(BaseVaeAgent):
             )
             states.append(z)
             next_states.append(zp)
-
             values.append(self.value_function[s0].to(DEVICE))
         states = torch.stack(states)
         next_states = torch.stack(next_states)
@@ -365,18 +384,18 @@ class LookaheadViAgent(BaseVaeAgent):
             torch.tensor(a).to(DEVICE),
         )
         dataloader = DataLoader(ds, batch_size=self.batch_size, shuffle=True)
-        self.update_actor_critic(dataloader)
+        return dataloader
 
     def update_actor_critic(self, dataloader):
-
-        self.actor.train()
-        self.critic.train()
-
+        self.train()
         optim = self.ac_optim
         for _ in range(self.n_epochs):
             for batch in dataloader:
 
-                log_probs = self.actor(batch["state"])[
+                logits = self.actor_net(batch["state"])
+                l2_loss = 0.5 * (logits**2).mean()
+
+                log_probs = F.log_softmax(logits, dim=1)[
                     torch.arange(batch["state"].shape[0]), batch["action"]
                 ]
                 with torch.no_grad():
@@ -399,7 +418,7 @@ class LookaheadViAgent(BaseVaeAgent):
                 critic_loss = nn.functional.mse_loss(batch["values"], state_values)
 
                 optim.zero_grad()
-                loss = actor_loss + critic_loss
+                loss = actor_loss + critic_loss + l2_loss
                 loss.backward()
 
                 optim.step()
