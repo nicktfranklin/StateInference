@@ -247,7 +247,7 @@ class LookaheadViAgent(BaseVaeAgent):
 
         # We use a specific dataset for the VAE training
         dataloader = DataLoader(
-            VaeDataset(obs, dataset["actions"], next_obs),
+            VaeDataset(obs, dataset["actions"], next_obs, rewards=dataset["rewards"]),
             batch_size=self.batch_size,
             shuffle=True,
             drop_last=True,
@@ -269,7 +269,7 @@ class LookaheadViAgent(BaseVaeAgent):
 
                 optim.zero_grad()
                 loss = self.state_inference_model.loss(
-                    batch["obs"], batch["actions"], batch["next_obs"]
+                    batch["obs"], batch["actions"], batch["rewards"], batch["next_obs"]
                 )
                 loss.backward()
 

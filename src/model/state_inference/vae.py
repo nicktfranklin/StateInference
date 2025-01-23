@@ -72,6 +72,7 @@ class StateVae(nn.Module):
         input_shape: Tuple[int, int, int] = INPUT_SHAPE,
         tau_is_parameter: bool = False,
         tau_min: float = 1e-4,
+        action_embedding_dim: int = 4,
         *,
         run_unit_test: bool = False,
     ):
@@ -88,7 +89,7 @@ class StateVae(nn.Module):
         self.tau_annealing_rate = tau_annealing_rate
         self.input_shape = input_shape
         self.tau_min = tau_min
-        self.action_embedding = LowRankEmbedding(4, z_dim * z_layers).to(DEVICE)
+        self.action_embedding = nn.Embedding(4, action_embedding_dim)
         self.join_action_and_state = nn.Sequential(
             nn.Linear(z_dim * z_layers * 2, z_dim * z_layers),
             nn.ReLU(),
@@ -99,6 +100,12 @@ class StateVae(nn.Module):
             nn.Linear(z_dim * z_layers * 2, 128),
             nn.ReLU(),
             nn.Linear(128, 1),
+        )
+
+        self.transition_network = nn.Sequential(
+            nn.Linear(z_dim * z_layers + action_embedding_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, z_dim * z_layers),
         )
 
         if tau_is_parameter:
@@ -203,17 +210,7 @@ class StateVae(nn.Module):
 
         n = self.z_layers * self.z_dim
 
-        # assume transitions between states, conditioned on actions, are linear
-        action_operator = self.action_embedding(a.to(DEVICE)).view(-1, n, n)
-        zp = torch.matmul(action_operator, z.unsqueeze(-1)).squeeze(-1)
-
-        # decode the predicted next state
-        x_next_hat = self.decode(zp)
-
-        # predict the reward for the state-transtion pair
-        r_hat = self.reward_prediction_network(torch.cat([z, zp], dim=1))
-
-        return (logits, z), x_hat.view(x.shape), x_next_hat.view(x.shape), r_hat
+        return (logits, z), x_hat.view(x.shape)
 
     def kl_loss(self, logits):
         """
@@ -238,30 +235,44 @@ class StateVae(nn.Module):
         # sum loss over dimensions in each example, average over batch
         return mse_loss.view(x.shape[0], -1).sum(1).mean()
 
+    def forward_transitions(self, z: FloatTensor, a: LongTensor) -> FloatTensor:
+        """Use residual connections to predict the next state"""
+        a_emb = self.action_embedding(a.to(DEVICE))
+        zp_hat = self.transition_network(torch.cat([self.flatten_z(z), a_emb], dim=-1))
+        return zp_hat + z
+
     def loss(
         self,
         x: FloatTensor,
         a: LongTensor,
-        target: FloatTensor = None,
         reward: FloatTensor = None,
+        xp: FloatTensor = None,
     ) -> FloatTensor:
         x = x.to(DEVICE).float()
-        (logits, _), x_hat, x_next_hat, r_hat = self(x, a)
+        (logits, z), x_hat = self(x, a)
+        (logits_p, zp), x_hat_p = self(xp, a)
 
-        if target is None:
-            target = x
+        z = self.flatten_z(z)
+        zp = self.flatten_z(zp)
 
         # get the two components of the ELBO loss
         kl_loss = self.kl_loss(logits)
-        recon_loss = self.recontruction_loss(x, x_hat) + self.recontruction_loss(
-            target, x_next_hat
-        )
+        kl_loss_p = self.kl_loss(logits_p)
+        recon_loss = self.recontruction_loss(x, x_hat)
+        recon_loss_p = self.recontruction_loss(xp, x_hat_p)
+
+        # get the transition model loss
+        zp_hat = self.forward_transitions(z, a)
+        transition_loss = F.mse_loss(zp_hat, zp)
+
+        loss = recon_loss + kl_loss + recon_loss_p + kl_loss_p + transition_loss
 
         if reward is not None:
-            reward_loss = F.mse_loss(r_hat, reward)
-            return recon_loss + kl_loss + reward_loss
+            r_hat = self.reward_prediction_network(torch.cat([z, zp], dim=-1))
+            reward_loss = F.mse_loss(r_hat, reward.float().to(DEVICE))
+            loss = loss + reward_loss
 
-        return recon_loss + kl_loss
+        return loss
 
     def diagnose_loss(self, x):
         with torch.no_grad():
