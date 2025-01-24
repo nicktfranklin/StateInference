@@ -4,6 +4,7 @@ from typing import Any, Dict, Hashable, Iterable, List, Optional, Union
 
 import gymnasium as gym
 import numpy as np
+import pytorch_lightning as pl
 import torch
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import (
@@ -106,23 +107,21 @@ class BaseAgent(ABC):
         self,
         n_rollout_steps: int,
         rollout_buffer: BaseBuffer,
-        callback: BaseCallback,
-        progress_bar: Iterable | bool = False,
+        epoch: int = 0,
     ) -> bool:
         task = self.get_task()
         obs = task.reset()[0]
         state = self._init_state()
         episode_start = True
 
-        callback.on_rollout_start()
-
-        for _ in range(n_rollout_steps):
+        run_id = 0
+        for _ in tqdm(range(n_rollout_steps), desc="Collection rollouts"):
             action, state = self.predict(obs, state, episode_start, deterministic=False)
             episode_start = False
 
             outcome_tuple = task.step(action)
             self.num_timesteps += 1
-            rollout_buffer.add(obs, action, outcome_tuple)
+            rollout_buffer.add(obs, action, outcome_tuple, run_id, epoch)
 
             self.update_rollout_policy(obs, action, outcome_tuple, rollout_buffer)
 
@@ -131,13 +130,7 @@ class BaseAgent(ABC):
 
             if done or truncated:
                 obs = task.reset()[0]
-
-            callback.update_locals(locals())
-            if not callback.on_step():
-                return False
-
-        callback.update_locals(locals())
-        callback.on_rollout_end()
+                run_id += 1
 
         return True
 
@@ -358,18 +351,6 @@ class BaseAgent(ABC):
 
         return mdp
 
-        # value_function = value_iteration(
-        #     transition_estimator.get_transition_functions(),
-        #     reward_estimator,
-        #     gamma,
-        #     iterations,
-        # )
-        # return {
-        #     "transition_estimator": transition_estimator,
-        #     "reward_estimator": reward_estimator,
-        #     "value_function": value_function,
-        # }
-
     def dehash_states(
         self, rollout_buffer: BaseBuffer, gamma: float = 0.99
     ) -> np.ndarray:
@@ -380,9 +361,62 @@ class BaseAgent(ABC):
         raise NotImplementedError
 
 
-class BaseVaeAgent(BaseAgent, ABC):
+class BaseVaeAgent(BaseAgent, ABC, pl.LightningModule):
+    log_kwargs = {
+        "prog_bar": True,
+        "on_step": True,
+        "on_epoch": True,
+        "sync_dist": True,
+    }
+
+    def __init__(
+        self,
+        task,
+        buffer_capacity: int | None = None,
+        rollout_len: int = 2048,
+        total_timesteps: int = 2048,
+        reset_buffer: bool = False,
+    ):
+        super().__init__(task)
+        self.buffer_capacity = (
+            buffer_capacity if buffer_capacity is not None else self.n_steps
+        )
+        self.n_steps = rollout_len
+        self.total_timesteps = total_timesteps
+        self.rollout_buffer = self.initialize_buffer()
+        self.reset_buffer = reset_buffer
+        self.num_timesteps = 0
+        # self.global_step = 0
+
     @abstractmethod
     def update_from_batch(self, batch: BaseBuffer): ...
 
     @abstractmethod
     def get_states(self, obs: Tensor) -> Hashable: ...
+
+    def initialize_buffer(self):
+        return RolloutBuffer(capacity=self.buffer_capacity)
+
+    def training_step(self, batch=None, batch_idx=None):
+        """This corresponds to a single epoch of training."""
+
+        n_rollout_steps = min(self.n_steps, self.total_timesteps - self.num_timesteps)
+
+        # collect rollouts
+        if not self.collect_rollouts(n_rollout_steps, self.rollout_buffer):
+            return
+
+        self.log("train/num_timesteps", self.num_timesteps, **self.log_kwargs)
+        self.log(
+            "train/Average Reward",
+            self.rollout_buffer.get_average_reward(),
+            **self.log_kwargs,
+        )
+        self.log(
+            "train/Average Episode Length",
+            self.rollout_buffer.get_average_run_length(),
+            **self.log_kwargs,
+        )
+
+        # update the model
+        self.update_from_batch(self.rollout_buffer)

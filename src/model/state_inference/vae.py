@@ -38,27 +38,6 @@ def unit_test_vae_reconstruction(model, input_shape):
         ), f"Reconstruction Shape {tuple(x_hat.shape)} Doesn't match Input {input_shape}"
 
 
-class LowRankEmbedding(nn.Module):
-    def __init__(self, num_embeddings: int, n: int, rank: int | None = None):
-        super().__init__()
-        rank = rank if rank else int(math.log(n))
-
-        # Initialize U and V matrices for each embedding
-        self.U = nn.Parameter(torch.randn(num_embeddings, n, rank))
-        self.V = nn.Parameter(torch.randn(num_embeddings, rank, n))
-
-        self.n = n
-        self.rank = rank
-
-    def forward(self, indices):
-        # Get U and V for the requested indices
-        U_selected = self.U[indices]  # batch_size x n x rank
-        V_selected = self.V[indices]  # batch_size x rank x n
-
-        # Multiply to get low rank matrices
-        return torch.bmm(U_selected, V_selected)  # batch_size x n x n
-
-
 class StateVae(nn.Module):
     def __init__(
         self,
@@ -191,7 +170,7 @@ class StateVae(nn.Module):
         z = self.flatten_z(z)
         return self.decoder(z)
 
-    def forward(self, x: Tensor, a: Tensor):
+    def forward(self, x: Tensor):
         """
         Forward pass of the Variational Autoencoder (VAE) model.
 

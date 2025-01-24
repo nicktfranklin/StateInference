@@ -1,4 +1,3 @@
-import random
 from typing import Any, Dict, Hashable, Optional
 
 import numpy as np
@@ -9,9 +8,8 @@ from stable_baselines3.common.distributions import CategoricalDistribution
 from torch import FloatTensor, Tensor
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from tqdm import trange
+from tqdm import tqdm, trange
 
-import src.model.state_inference.vae
 from src.model.agents.utils.state_hash import TensorIndexer
 from src.task.utils import ActType
 from src.utils.pytorch_utils import DEVICE, convert_8bit_to_float
@@ -20,7 +18,7 @@ from ..state_inference.vae import StateVae
 from ..training.data import MdpDataset, VaeDataset
 from ..training.rollout_data import BaseBuffer
 from .utils.base_agent import BaseVaeAgent
-from .utils.tabular_agent_pytorch import DynaWithViAgent, ModelBasedAgent
+from .utils.tabular_agent_pytorch import DynaWithViAgent
 
 # from .utils.tabular_agents import ModelFreeAgent
 
@@ -39,7 +37,6 @@ class LookaheadViAgent(BaseVaeAgent):
         self,
         task,
         state_inference_model: StateVae,
-        optim_kwargs: Optional[Dict[str, Any]] = None,
         grad_clip: int = 2.5,
         batch_size: int = 64,
         gamma: float = 0.99,
@@ -50,19 +47,13 @@ class LookaheadViAgent(BaseVaeAgent):
         n_epochs: int = 10,
         alpha: float = 0.05,
         dyna_updates: int = 5,
-        persistant_optim: bool = False,
     ) -> None:
         """
         :param n_steps: The number of steps to run for each environment per update
         """
+        self.n_steps = n_steps
         super().__init__(task)
-        self.state_inference_model = state_inference_model.to(DEVICE)
-
-        self.optim = (
-            self.state_inference_model.configure_optimizers(optim_kwargs)
-            if persistant_optim
-            else None
-        )
+        self.state_inference_model = state_inference_model
         self.grad_clip = grad_clip
         self.batch_size = batch_size
         self.gamma = gamma
@@ -73,29 +64,8 @@ class LookaheadViAgent(BaseVaeAgent):
         self.epsilon = epsilon
 
         self.env = task
-
         n_actions = task.action_space.n
 
-        self.model_based_agent = DynaWithViAgent(
-            n_states=0,
-            n_actions=n_actions,
-            gamma=gamma,
-            learning_rate=alpha,
-            dyna_updates=dyna_updates,
-        )
-
-        z = self.state_inference_model.z_layers * self.state_inference_model.z_dim
-        self.actor_net = nn.Sequential(
-            nn.Linear(z, z), nn.ReLU(), nn.Linear(z, n_actions), nn.LogSoftmax(dim=1)
-        ).to(DEVICE)
-        self.critic = nn.Sequential(nn.Linear(z, z), nn.ReLU(), nn.Linear(z, 1)).to(
-            DEVICE
-        )
-        self.ac_optim = torch.optim.Adam(
-            list(self.actor_net.parameters()) + list(self.critic.parameters()), lr=alpha
-        )
-
-        # self.model_free_agent = ModelFreeAgent(n_actions=n_actions, learning_rate=alpha)
         self.dist = CategoricalDistribution(action_dim=n_actions)
         self.softmax_gain = softmax_gain
 
@@ -106,6 +76,42 @@ class LookaheadViAgent(BaseVaeAgent):
         self.n_dyna_updates = dyna_updates
 
         self.state_indexer = TensorIndexer(device=torch.device("cpu"))
+
+        self.automatic_optimization = False
+
+        # pure python
+        self.model_based_agent = DynaWithViAgent(
+            n_states=0,
+            n_actions=n_actions,
+            gamma=gamma,
+            learning_rate=alpha,
+            dyna_updates=dyna_updates,
+        )
+
+        # pytorch actor critic
+        z = self.state_inference_model.z_layers * self.state_inference_model.z_dim
+        self.actor_net = nn.Sequential(
+            nn.Linear(z, z), nn.ReLU(), nn.Linear(z, n_actions), nn.LogSoftmax(dim=1)
+        ).to(DEVICE)
+        self.critic = nn.Sequential(nn.Linear(z, z), nn.ReLU(), nn.Linear(z, 1)).to(
+            DEVICE
+        )
+        self.ac_optim = torch.optim.Adam(
+            list(self.actor_net.parameters()) + list(self.critic.parameters()), lr=alpha
+        )
+        self.transition_model = nn.Sequential(
+            nn.Linear(z + n_actions, z), nn.ReLU(), nn.Linear(z, z)
+        ).to(DEVICE)
+        self.action_embedding = nn.Embedding(n_actions, n_actions).to(DEVICE)
+
+    def configure_optimizers(self):
+        self.vae_optim = torch.optim.Adam(
+            self.state_inference_model.parameters(), lr=3e-4
+        )
+        self.ac_optim = torch.optim.Adam(
+            list(self.actor_net.parameters()) + list(self.critic.parameters()), lr=3e-4
+        )
+        return [self.vae_optim, self.ac_optim]
 
     def _init_state(self):
         return None
@@ -235,7 +241,7 @@ class LookaheadViAgent(BaseVaeAgent):
         self.actor_net.train()
         self.critic.train()
 
-    def train_vae(self, buffer: BaseBuffer, progress_bar: bool = True):
+    def prepare_vae_dataloader(self, buffer: BaseBuffer):
         # prepare the dataset for training the VAE
         dataset = buffer.get_dataset()
         obs = convert_8bit_to_float(torch.tensor(dataset["observations"])).to(DEVICE)
@@ -247,45 +253,104 @@ class LookaheadViAgent(BaseVaeAgent):
 
         # We use a specific dataset for the VAE training
         dataloader = DataLoader(
-            VaeDataset(obs, dataset["actions"], next_obs, rewards=dataset["rewards"]),
+            VaeDataset(
+                obs,
+                torch.from_numpy(dataset["actions"]).to(self.device),
+                next_obs,
+                rewards=torch.from_numpy(dataset["rewards"]).float().to(self.device),
+            ),
             batch_size=self.batch_size,
             shuffle=True,
             drop_last=True,
         )
 
-        if self.optim is None:
-            optim = self.state_inference_model.configure_optimizers()
-        else:
-            optim = self.optim
+        return dataloader
 
-        if progress_bar:
-            iterator = trange(self.n_epochs, desc="Vae Epochs")
-        else:
-            iterator = range(self.n_epochs)
+    def train_vae(self, buffer: BaseBuffer):
+        vae = self.state_inference_model
+        optim = self.vae_optim
+        dataloader = self.prepare_vae_dataloader(buffer)
 
+        metrics = {}
         self.train()
-        for _ in iterator:
-            for batch in dataloader:
 
+        for epoch in tqdm(range(self.n_epochs), desc="VAE Training Epochs: "):
+            epoch_metrics = {
+                "kl_loss": 0,
+                "obs_recon_loss": 0,
+                "next_obs_recon_loss": 0,
+                "transition_loss": 0,
+                "total_loss": 0,
+            }
+
+            for batch in dataloader:
                 optim.zero_grad()
-                loss = self.state_inference_model.loss(
-                    batch["obs"], batch["actions"], batch["rewards"], batch["next_obs"]
-                )
-                loss.backward()
+
+                # Calculate loss here for logging
+                (logits, z), x_hat = vae(batch["obs"])
+                (logits_p, z_p), x_hat_p = vae(batch["next_obs"])
+
+                z = vae.flatten_z(z)
+                z_p = vae.flatten_z(z_p)
+
+                kl_loss = vae.kl_loss(logits)
+                kl_loss_p = vae.kl_loss(logits_p)
+                recon_loss = vae.recontruction_loss(x_hat, batch["obs"])
+                recon_loss_p = vae.recontruction_loss(x_hat_p, batch["next_obs"])
+
+                # model the transition function
+                a = self.action_embedding(batch["actions"])
+                z_hat = self.transition_model(torch.cat([z, a], dim=1)) + z
+                transition_loss = F.mse_loss(z_hat, z_p)
+
+                loss = kl_loss + kl_loss_p + recon_loss + recon_loss_p + transition_loss
+
+                epoch_metrics["kl_loss"] += kl_loss.item()
+                epoch_metrics["obs_recon_loss"] += recon_loss.item()
+                epoch_metrics["next_obs_recon_loss"] += recon_loss_p.item()
+                epoch_metrics["transition_loss"] += transition_loss.item()
+                epoch_metrics["total_loss"] += loss.item()
+
+                if self.logger:
+                    self.logger.log_metrics(
+                        {
+                            "train/total_loss": loss,
+                            "train/transition_loss": transition_loss,
+                            "train/kl_loss": kl_loss + kl_loss_p,
+                            "train/obs_recon_loss": recon_loss,
+                            "train/next_obs_recon_loss": recon_loss_p,
+                        },
+                        step=self.global_step,
+                    )
+                # self.global_step += 1
 
                 if self.grad_clip is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.state_inference_model.parameters(), self.grad_clip
+                    self.clip_gradients(
+                        optim,
+                        gradient_clip_val=self.grad_clip,
+                        gradient_clip_algorithm="norm",
                     )
 
+                optim.zero_grad()
+                self.manual_backward(loss, retain_graph=True)
                 optim.step()
-            self.state_inference_model.prep_next_batch()
-        self.state_inference_model.eval()
+
+            # Log epoch-level metrics
+            for key, value in epoch_metrics.items():
+                metrics[f"epoch_{key}"] = value / len(dataloader)
+                self.state_inference_model.prep_next_batch()
+        return metrics
 
     def update_from_batch(self, buffer: BaseBuffer, progress_bar: bool = False):
-        self.train_vae(buffer, progress_bar=progress_bar)
+        # self.global_step += 1
+        metrics = {}
+
+        vae_metrics = self.train_vae(buffer)
         dataloader = self.update_mb_agent(buffer)
         self.update_actor_critic(dataloader)
+
+        # if self.logger:
+        #     self.logger.log_metrics(vae_metrics, step=self.global_step)
 
     def update_mb_agent(self, buffer: BaseBuffer):
 
@@ -389,7 +454,7 @@ class LookaheadViAgent(BaseVaeAgent):
     def update_actor_critic(self, dataloader):
         self.train()
         optim = self.ac_optim
-        for _ in range(self.n_epochs):
+        for _ in tqdm(range(self.n_epochs), desc="Actor-Critic Training Epochs: "):
             for batch in dataloader:
 
                 logits = self.actor_net(batch["state"])
@@ -417,31 +482,18 @@ class LookaheadViAgent(BaseVaeAgent):
                 # compute the critic loss
                 critic_loss = nn.functional.mse_loss(batch["values"], state_values)
 
-                optim.zero_grad()
                 loss = actor_loss + critic_loss + l2_loss
-                loss.backward()
 
+                # Replace self.log with self.log for PyTorch Lightning
+                self.log("train/actor_loss", actor_loss, prog_bar=True)
+                self.log("train/critic_loss", critic_loss, prog_bar=True)
+                self.log("train/advantage", advantages.mean(), prog_bar=True)
+                self.log("train/total_actor_critic_loss", loss, prog_bar=True)
+
+                optim.zero_grad()
+                self.manual_backward(loss, retain_graph=True)
+                # loss.backward()
                 optim.step()
-
-    def learn(
-        self,
-        total_timesteps: int,
-        progress_bar: bool = False,
-        reset_buffer: bool = False,
-        capacity: Optional[int] = None,
-        callback: BaseCallback | None = None,
-        buffer_class: str | None = None,
-        buffer_kwargs: Dict[str, Any] | None = None,
-    ):
-        super().learn(
-            total_timesteps=total_timesteps,
-            progress_bar=progress_bar,
-            reset_buffer=reset_buffer,
-            capacity=capacity,
-            callback=callback,
-            buffer_class=buffer_class,
-            buffer_kwargs=buffer_kwargs,
-        )
 
     @classmethod
     def make_from_configs(
@@ -451,10 +503,7 @@ class LookaheadViAgent(BaseVaeAgent):
         vae_config: Dict[str, Any],
         env_kwargs: Dict[str, Any],
     ):
-        VaeClass = getattr(
-            src.model.state_inference.vae, agent_config["vae_model_class"]
-        )
-        vae = VaeClass.make_from_configs(vae_config, env_kwargs)
+        vae = StateVae.make_from_configs(vae_config, env_kwargs)
         return cls(task, vae, **agent_config["state_inference_model"])
 
     def get_graph_laplacian(

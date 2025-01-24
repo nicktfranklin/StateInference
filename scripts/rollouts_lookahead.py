@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
+import pytorch_lightning as pl
 import torch
 import yaml
 from stable_baselines3.common.monitor import Monitor
@@ -16,6 +17,7 @@ from stable_baselines3.common.monitor import Monitor
 from src.model.agents.lookahead_value_iteration import (
     LookaheadViAgent as ValueIterationAgent,
 )
+from src.model.state_inference.vae import StateVae
 from src.model.training.callbacks import ThreadTheNeedleCallback
 from src.model.training.rollout_data import RolloutBuffer as Buffer
 from src.task.gridworld import CnnWrapper, GridWorldEnv
@@ -100,26 +102,38 @@ def train_agent(configs: Config):
 
     # create task
     task = make_env(configs)
-    task = Monitor(task, configs.log_dir)  # not sure I use this
+    # task = Monitor(task, configs.log_dir)  # not sure I use this
 
-    callback = ThreadTheNeedleCallback()
+    # callback = ThreadTheNeedleCallback(
 
-    agent = ValueIterationAgent.make_from_configs(
-        task, configs.agent_config, configs.vae_config, configs.env_kwargs
+    vae = StateVae.make_from_configs(configs.vae_config, configs.env_kwargs)
+    agent = ValueIterationAgent(
+        task, vae, **configs.agent_config["state_inference_model"]
     )
 
-    agent.learn(
-        total_timesteps=configs.n_training_samples,
-        progress_bar=True,
-        callback=callback,
-        capacity=configs.capacity,
-        buffer_class="priority",
-        buffer_kwargs=dict(aggregation=np.max),
+    logger = pl.loggers.TensorBoardLogger("tensorboard", name="lookahead_priority")
+
+    trainer = pl.Trainer(
+        max_epochs=50,  # or however many epochs you want
+        accelerator="auto",
+        devices=1,
+        logger=logger,
+        log_every_n_steps=1,  # Log every step
     )
 
-    data = {"rewards": callback.rewards, "evaluations": callback.evaluations}
+    class DummyDataset(torch.utils.data.Dataset):
+        def __init__(self, n):
+            self.n = n
 
-    return agent, data
+        def __len__(self):
+            return self.n
+
+        def __getitem__(self, idx):
+            return torch.randn(1, 3, 64, 64), torch.randn(1, 3, 64, 64)
+
+    trainer.fit(agent, train_dataloaders=DummyDataset(configs.n_training_samples))
+
+    return agent
 
 
 def main():

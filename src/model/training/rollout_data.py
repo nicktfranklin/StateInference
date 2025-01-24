@@ -50,6 +50,8 @@ class RolloutBuffer(BaseBuffer):
         truncated: Optional[List[bool]] = None,
         info: Optional[List[Dict[str, Any]]] = None,
         capacity: Optional[int] = None,
+        run: Optional[List[int]] = None,
+        epoch: Optional[List[int]] = None,
     ) -> None:
         self.action = action if action is not None else []
         self.obs = obs if obs is not None else []
@@ -59,8 +61,17 @@ class RolloutBuffer(BaseBuffer):
         self.truncated = truncated if truncated is not None else []
         self.info = info if info is not None else []
         self.capcity = capacity
+        self.run = run if run is not None else []
+        self.epoch = epoch if epoch is not None else []
 
-    def add(self, obs: ObsType, action: ActType, obs_tuple: OutcomeTuple):
+    def add(
+        self,
+        obs: ObsType,
+        action: ActType,
+        obs_tuple: OutcomeTuple,
+        run: int = 0,
+        epoch: int = 0,
+    ):
         self.action.append(action)
         self.obs.append(obs)
         self.next_obs.append(obs_tuple[0])  # these are sucessor observations
@@ -68,6 +79,8 @@ class RolloutBuffer(BaseBuffer):
         self.terminated.append(obs_tuple[2])
         self.truncated.append(obs_tuple[3])
         self.info.append(obs_tuple[4])
+        self.run.append(run)
+        self.epoch.append(epoch)
 
         if self.capcity is not None and len(self.obs) > self.capcity:
             self.action.pop(0)
@@ -77,6 +90,7 @@ class RolloutBuffer(BaseBuffer):
             self.terminated.pop(0)
             self.truncated.pop(0)
             self.info.pop(0)
+            self.run.pop(0)
 
     def get_dataset(self) -> dict[str, Union[Any, Tensor]]:
         """This is meant to be consistent with the dataset in d4RL"""
@@ -90,6 +104,17 @@ class RolloutBuffer(BaseBuffer):
             "timouts": np.stack(self.truncated),  # timeouts are truncated
             "infos": self.info,
         }
+
+    def get_average_reward(self, epoch: int = 0) -> float:
+        return np.mean([r for r, e in zip(self.reward, self.epoch) if e == epoch])
+
+    def get_average_run_length(self, epoch: int = 0) -> float:
+        runs = np.stack(self.run)
+        epochs = np.stack(self.epoch)
+
+        n_runs = runs[epochs == epoch].max()
+        n_timesteps = len(runs[epochs == epoch])
+        return n_timesteps / float(n_runs)
 
     def get_obs(self, idx: int) -> ObservationTuple:
         return ObservationTuple(
