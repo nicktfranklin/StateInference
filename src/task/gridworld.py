@@ -145,6 +145,19 @@ class GridWorldEnv(gym.Env):
                 state values, shape (n_states,)
         """
 
+        q, v = self.get_state_values(gamma=gamma)
+
+        return (
+            np.array([np.isclose(q0, q0.max()) for q0 in q], dtype=float),
+            v[:-1],
+        )
+
+    def get_optimal_value_function(self, gamma=0.99) -> np.ndarray:
+        """
+        Returns:
+            values: np.ndarray
+                state values, shape (n_states,)
+        """
         t = self.transition_model.get_state_action_transitions(self.end_state)
         r = self.reward_model.construct_rew_func(t)
 
@@ -153,16 +166,17 @@ class GridWorldEnv(gym.Env):
         q = np.zeros((n_states, n_actions))
         v = np.zeros(n_states)
         for _ in range(1_000):
-            q = r + gamma * np.dot(t, v)
+            q = gamma * (
+                r + np.dot(t, v)
+            )  # is paired with the successor state, not the current state
             v = q.max(axis=0)
 
-        # remove the terminal state
-        q = q[:, :-1].T
+        # definitially, the terminal values have their assumed reward.  This is
+        # not calculated for terminal states, as they have a self-absorbing transition
+        for s in self.end_state:
+            v[s] = self.reward_model.get_reward(s)
 
-        return (
-            np.array([np.isclose(q0, q0.max()) for q0 in q], dtype=float),
-            v[:-1],
-        )
+        return q[:, :-1], v[:-1]
 
     # Key methods from Gymnasium:
     def reset(
