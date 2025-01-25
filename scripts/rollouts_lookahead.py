@@ -70,7 +70,7 @@ class Config:
     n_batch: int
     epsilon: float = 0.02
 
-    capacity: Optional[int] = None
+    capacity: Optional[int] = 2048 * 10
 
     @classmethod
     def construct(cls, args: argparse.Namespace):
@@ -108,7 +108,10 @@ def train_agent(configs: Config):
 
     vae = StateVae.make_from_configs(configs.vae_config, configs.env_kwargs)
     agent = ValueIterationAgent(
-        task, vae, **configs.agent_config["state_inference_model"]
+        task,
+        vae,
+        **configs.agent_config["state_inference_model"],
+        buffer_capacity=configs.capacity,
     )
 
     logger = pl.loggers.TensorBoardLogger("tensorboard", name="lookahead_priority")

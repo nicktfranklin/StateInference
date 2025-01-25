@@ -420,3 +420,7 @@ class BaseVaeAgent(BaseAgent, ABC, pl.LightningModule):
 
         # update the model
         self.update_from_batch(self.rollout_buffer)
+
+    def validation_step(self, batch=None, batch_idx=None):
+        """This corresponds to a single epoch of validation."""
+        pass

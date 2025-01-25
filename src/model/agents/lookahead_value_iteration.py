@@ -47,12 +47,21 @@ class LookaheadViAgent(BaseVaeAgent):
         n_epochs: int = 10,
         alpha: float = 0.05,
         dyna_updates: int = 5,
+        buffer_capacity: Optional[int] = None,
+        total_timesteps: int = 2048,
+        reset_buffer: bool = False,
     ) -> None:
         """
         :param n_steps: The number of steps to run for each environment per update
         """
         self.n_steps = n_steps
-        super().__init__(task)
+        super().__init__(
+            task,
+            buffer_capacity=buffer_capacity,
+            rollout_len=n_steps,
+            total_timesteps=total_timesteps,
+            reset_buffer=reset_buffer,
+        )
         self.state_inference_model = state_inference_model
         self.grad_clip = grad_clip
         self.batch_size = batch_size
@@ -168,23 +177,6 @@ class LookaheadViAgent(BaseVaeAgent):
 
         # # update the model
         self.model_based_agent.update(s, a, r, sp, done)
-
-        # # update q-values
-        # self.model_free_agent.update(s, a, r, sp)
-
-        # # resampling (dyna) updates
-        # for _ in range(min(len(rollout_buffer), self.n_dyna_updates)):
-        #     # sample observations and actions with replacement
-        #     idx = random.randint(0, len(rollout_buffer) - 1)
-
-        #     obs, a, _, _ = rollout_buffer.get_obs(idx)
-
-        #     s = self._get_state_hashkey(obs)[0]
-
-        #     # draw r, sp from the model
-        #     r, sp = self.model_based_agent.sample(s, a)
-
-        #     self.model_free_agent.update(s, a, r, sp)
 
     def get_policy(self, obs: Tensor):
         s = self._get_state_hashkey(obs)
@@ -516,3 +508,13 @@ class LookaheadViAgent(BaseVaeAgent):
 
     def get_states(self, obs: Tensor, add_to_indexer=True) -> Hashable:
         return self._get_state_hashkey(obs, add_to_indexer=add_to_indexer)
+
+    def validation_step(self, batch=None, batch_idx=None):
+        critic_error = []
+        q_star, v_star = self.task.get_optimal_value_function()
+        for ii in range(400):
+            obs = self.task.generate_observation(ii)
+
+            v_hat = self.get_critic_values(obs).item()
+            error = np.mean((v_hat - v_star[ii]) ** 2)
+            self.log("val/critic_error", error)
