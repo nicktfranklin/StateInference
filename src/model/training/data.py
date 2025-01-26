@@ -47,3 +47,27 @@ class VaeDataset(torch.utils.data.Dataset):
 
     def collate_fn(self, batch):
         return {k: torch.stack([d[k] for d in batch]) for k in batch[0]}
+
+
+# from .utils.tabular_agents import ModelFreeAgent
+
+
+class ActorCriticDataset(torch.utils.data.Dataset):
+    def __init__(self, states, next_states, values, rewards, actions):
+        self.s = states
+        self.sp = next_states
+        self.a = actions
+        self.r = rewards
+        self.v = values
+
+    def __len__(self):
+        return len(self.s)
+
+    def __getitem__(self, idx):
+        return {
+            "state": self.s[idx],
+            "next_state": self.sp[idx],
+            "action": self.a[idx],
+            "reward": self.r[idx],
+            "values": self.v[idx],
+        }

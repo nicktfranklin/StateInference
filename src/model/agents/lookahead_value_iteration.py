@@ -15,12 +15,10 @@ from src.task.utils import ActType
 from src.utils.pytorch_utils import DEVICE, convert_8bit_to_float
 
 from ..state_inference.vae import StateVae
-from ..training.data import MdpDataset, VaeDataset
+from ..training.data import ActorCriticDataset, MdpDataset, VaeDataset
 from ..training.rollout_data import BaseBuffer
 from .utils.base_agent import BaseVaeAgent
 from .utils.tabular_agent_pytorch import DynaWithViAgent
-
-# from .utils.tabular_agents import ModelFreeAgent
 
 
 class LookaheadViAgent(BaseVaeAgent):
@@ -412,28 +410,7 @@ class LookaheadViAgent(BaseVaeAgent):
         values = torch.stack(values)
 
         # make a new dataloader
-        class MyDataset(torch.utils.data.Dataset):
-            def __init__(self, states, next_states, values, rewards, actions):
-                self.s = states
-                self.sp = next_states
-                self.a = actions
-                self.r = rewards
-                self.v = values
-
-            def __len__(self):
-                return len(self.s)
-
-            def __getitem__(self, idx):
-                return {
-                    "state": self.s[idx],
-                    "next_state": self.sp[idx],
-                    "action": self.a[idx],
-                    "reward": self.r[idx],
-                    "values": self.v[idx],
-                }
-
-        # print(states, next_states, values, r, a)
-        ds = MyDataset(
+        ds = ActorCriticDataset(
             states,
             next_states,
             values,
