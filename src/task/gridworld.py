@@ -109,6 +109,17 @@ class GridWorldEnv(gym.Env):
     def set_initial_state(self, initial_state):
         self.initial_state = initial_state
 
+    def decode_observation(self, observation: np.ndarray) -> int:
+        """Assumes in put of shape (n, map_height, map_height) or (map_height, map_height)"""
+        assert observation.ndim == 2 or observation.ndim == 3
+        if observation.ndim == 2:
+            observation = observation.unsqueeze(0)
+        assert observation.shape[1:] == (
+            self.observation_model.map_height,
+            self.observation_model.map_height,
+        )
+        return [self.observation_model.decode_obs(obs) for obs in observation]
+
     def get_state_values(
         self, outcomes: List[OutcomeTuple] | None = None, gamma: float = 0.95
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -177,6 +188,18 @@ class GridWorldEnv(gym.Env):
             v[s] = self.reward_model.get_reward(s)
 
         return q[:, :-1], v[:-1]
+
+    def get_observation_values(
+        self, observations: np.ndarray, gamma: float = 0.95
+    ) -> np.ndarray:
+        """
+        Args:
+            observations: np.ndarray
+        Returns:
+            np.ndarray: observation values
+        """
+        _, v = self.get_optimal_value_function(gamma)
+        return np.array([v[self.decode_observation(obs)] for obs in observations])
 
     # Key methods from Gymnasium:
     def reset(
