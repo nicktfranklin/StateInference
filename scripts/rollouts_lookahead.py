@@ -93,7 +93,7 @@ def make_env(configs: Config) -> GridWorldEnv:
     task = CnnWrapper(Environment.create_env(**configs.env_kwargs))
 
     # create the monitor
-    task = Monitor(task, configs.log_dir)
+    # task = Monitor(task, configs.log_dir)
 
     return task
 
@@ -122,6 +122,7 @@ def train_agent(configs: Config):
         devices=1,
         logger=logger,
         log_every_n_steps=1,  # Log every step
+        val_check_interval=1,  # Run validation every epoch
     )
 
     class DummyDataset(torch.utils.data.Dataset):
@@ -134,7 +135,11 @@ def train_agent(configs: Config):
         def __getitem__(self, idx):
             return torch.randn(1, 3, 64, 64), torch.randn(1, 3, 64, 64)
 
-    trainer.fit(agent, train_dataloaders=DummyDataset(configs.n_training_samples))
+    trainer.fit(
+        agent,
+        train_dataloaders=DummyDataset(100),
+        val_dataloaders=DummyDataset(1),
+    )
 
     return agent
 

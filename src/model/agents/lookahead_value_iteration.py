@@ -511,10 +511,15 @@ class LookaheadViAgent(BaseVaeAgent):
 
     def validation_step(self, batch=None, batch_idx=None):
         critic_error = []
-        q_star, v_star = self.task.get_optimal_value_function()
+        q_star, v_star = self.env.get_optimal_value_function(self.gamma)
         for ii in range(400):
             obs = self.task.generate_observation(ii)
 
             v_hat = self.get_critic_values(obs).item()
             error = np.mean((v_hat - v_star[ii]) ** 2)
-            self.log("val/critic_error", error)
+            critic_error.append(error)
+
+        error = np.mean(critic_error)
+        self.log("val/critic_error", error)
+        if self.logger:
+            self.logger.log_metrics({"val/critic_error": error}, step=self.global_step)
