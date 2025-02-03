@@ -26,6 +26,7 @@ class GridWorldEnv(gym.Env):
         end_state: Optional[list[int]] = None,
         random_initial_state: bool = True,
         max_steps: Optional[int] = None,
+        return_state_values: bool = True,
         **kwargs,
     ) -> None:
         self.transition_model = transition_model
@@ -62,6 +63,10 @@ class GridWorldEnv(gym.Env):
         self.render_mode = None
         self.reward_range = self.reward_model.get_rew_range()
         self.spec = None
+
+        if return_state_values:
+            self.return_state_values = True
+            _, self.state_values = self.get_optimal_value_function()
 
     def _check_truncate(self) -> bool:
         if self.max_steps is not None and self.step_counter >= self.max_steps:
@@ -237,6 +242,11 @@ class GridWorldEnv(gym.Env):
         terminated = self._check_terminate(successor_state)
         truncated = self._check_truncate()
         info = dict(start_state=self.current_state, successor_state=successor_state)
+        if self.return_state_values:
+            info["state_value"] = (
+                self.state_values[self.current_state],
+                self.state_values[successor_state],
+            )
 
         self.current_state = successor_state
         self.observation = sucessor_observation

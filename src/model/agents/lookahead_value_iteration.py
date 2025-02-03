@@ -360,6 +360,7 @@ class LookaheadViAgent(BaseVaeAgent):
         self.reset_state_indexer()
 
         s, sp, a, r, d = [], [], [], [], []
+        v = []
         for batch in dataloader:
             s.append(
                 self._get_state_hashkey(
@@ -374,6 +375,10 @@ class LookaheadViAgent(BaseVaeAgent):
             a.append(batch["actions"].item())
             r.append(batch["rewards"].item())
             d.append(batch["dones"].item())
+
+            # true values (for evaluation only)
+            if "state_value" in batch:
+                v.append(batch["state_value"][0].item())
 
         n_states = len(set(s + sp))
         self.model_based_agent.reset(n_states)
@@ -409,6 +414,10 @@ class LookaheadViAgent(BaseVaeAgent):
         states = torch.stack(states)
         next_states = torch.stack(next_states)
         values = torch.stack(values)
+
+        # value error (evaluation only)
+        value_error = torch.mean((values - torch.tensor(v).to(DEVICE)) ** 2)
+        self.log("train/value_error", value_error, prog_bar=True)
 
         # make a new dataloader
         ds = ActorCriticDataset(

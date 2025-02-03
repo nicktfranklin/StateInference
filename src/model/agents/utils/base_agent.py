@@ -363,7 +363,7 @@ class BaseAgent(ABC):
 
 class BaseVaeAgent(BaseAgent, ABC, pl.LightningModule):
     log_kwargs = {
-        "prog_bar": True,
+        "prog_bar": False,
         "on_step": True,
         "on_epoch": True,
         "sync_dist": True,

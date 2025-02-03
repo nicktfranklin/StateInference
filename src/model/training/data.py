@@ -12,13 +12,20 @@ class MdpDataset(Dataset):
         return len(self.dataset["observations"])
 
     def __getitem__(self, idx):
-        return {
+        output = {
             "observations": self.dataset["observations"][idx],
             "next_observations": self.dataset["next_observations"][idx],
             "actions": self.dataset["actions"][idx],
             "rewards": self.dataset["rewards"][idx],
             "dones": self.dataset["terminated"][idx] or self.dataset["timouts"][idx],
         }
+
+        info = self.dataset["infos"][idx]
+        if "state_value" in info:
+            output["state_value"] = info["state_value"][0]
+            output["next_state_value"] = info["state_value"][1]
+
+        return output
 
 
 class VaeDataset(torch.utils.data.Dataset):
