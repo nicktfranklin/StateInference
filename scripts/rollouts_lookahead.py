@@ -12,6 +12,7 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import yaml
+from pytorch_lightning.loggers import TensorBoardLogger
 from stable_baselines3.common.monitor import Monitor
 
 from src.model.agents.lookahead_value_iteration import (

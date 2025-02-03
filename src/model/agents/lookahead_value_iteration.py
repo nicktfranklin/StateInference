@@ -177,13 +177,14 @@ class LookaheadViAgent(BaseVaeAgent):
         self.model_based_agent.update(s, a, r, sp, done)
 
     def get_policy(self, obs: Tensor):
-        s = self._get_state_hashkey(obs)
-        if s == -1:
-            return self.dist.proba_distribution(
-                torch.ones(self.env.action_space.n) / self.env.action_space.n
-            )
-        q = self.model_based_agent.get_q_values(s)
-        return self.dist.proba_distribution(q * self.softmax_gain)
+        # s = self._get_state_hashkey(obs)
+        # if s == -1:
+        #     return self.dist.proba_distribution(
+        #         torch.ones(self.env.action_space.n) / self.env.action_space.n
+        #     )
+        # q = self.model_based_agent.get_q_values(s)
+        # return self.dist.proba_distribution(q * self.softmax_gain)
+        return self.dist.proba_distribution(torch.ones(self.env.action_space.n))
 
     def get_pmf(self, obs: FloatTensor) -> np.ndarray:
         if obs.ndim == 3:
@@ -457,7 +458,7 @@ class LookaheadViAgent(BaseVaeAgent):
                 self.log("train/actor_loss", actor_loss, prog_bar=True)
                 self.log("train/critic_loss", critic_loss, prog_bar=True)
                 self.log("train/advantage", advantages.mean(), prog_bar=True)
-                self.log("train/total_actor_critic_loss", loss, prog_bar=True)
+                self.log("train/total_actor_critic_loss", loss, prog_bar=False)
 
                 optim.zero_grad()
                 self.manual_backward(loss, retain_graph=True)
@@ -497,6 +498,22 @@ class LookaheadViAgent(BaseVaeAgent):
             critic_error.append(error)
 
         error = np.mean(critic_error)
-        self.log("val/critic_error", error)
+        metrics = {"val/critic_error": error}
+
+        # evaluate the value-iteration estimates
+        if len(self.rollout_buffer) > 0:
+            vi_error = []
+            dataset = self.rollout_buffer.get_dataset()
+            obs = dataset["observations"]
+            s = self._get_state_hashkey(obs)
+            v_star = self.task.get_observation_values(obs.squeeze(), self.gamma)
+            vi_error.extend((self.value_function[s] - v_star) ** 2)
+            vi_error = np.mean(vi_error)
+
+            metrics["val/vi_error"] = vi_error
+
         if self.logger:
-            self.logger.log_metrics({"val/critic_error": error}, step=self.global_step)
+            self.logger.log_metrics(
+                metrics,
+                step=self.current_epoch,
+            )
