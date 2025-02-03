@@ -113,7 +113,7 @@ class GridWorldEnv(gym.Env):
         """Assumes in put of shape (n, map_height, map_height) or (map_height, map_height)"""
         assert observation.ndim == 2 or observation.ndim == 3
         if observation.ndim == 2:
-            observation = observation.unsqueeze(0)
+            observation = np.expand_dims(observation, 0)
         assert observation.shape[1:] == (
             self.observation_model.map_height,
             self.observation_model.map_height,
