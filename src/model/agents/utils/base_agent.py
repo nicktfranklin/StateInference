@@ -207,6 +207,9 @@ class BaseAgent(ABC):
 
         callback.on_training_end()
 
+
+class StateInferenceMixin:
+
     def get_policy_prob(
         self, env: VecEnv, n_states: int, map_height: int, cnn: bool = True
     ) -> FloatTensor:
@@ -361,7 +364,7 @@ class BaseAgent(ABC):
         raise NotImplementedError
 
 
-class BaseVaeAgent(BaseAgent, ABC, pl.LightningModule):
+class BaseVaeAgent(BaseAgent, StateInferenceMixin, ABC, pl.LightningModule):
     log_kwargs = {
         "prog_bar": False,
         "on_step": True,
