@@ -239,6 +239,7 @@ class GridWorldEnv(gym.Env):
         sucessor_observation = self.generate_observation(successor_state)
 
         reward = self.reward_model.get_reward(successor_state)
+        print(reward)
         terminated = self._check_terminate(successor_state)
         truncated = self._check_truncate()
         info = dict(start_state=self.current_state, successor_state=successor_state)

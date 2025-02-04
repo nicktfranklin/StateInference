@@ -114,14 +114,13 @@ class BaseAgent(ABC):
         state = self._init_state()
         episode_start = True
 
-        run_id = 0
         for _ in tqdm(range(n_rollout_steps), desc="Collection rollouts"):
             action, state = self.predict(obs, state, episode_start, deterministic=False)
             episode_start = False
 
             outcome_tuple = task.step(action)
             self.num_timesteps += 1
-            rollout_buffer.add(obs, action, outcome_tuple, run_id, epoch)
+            rollout_buffer.add(obs, action, outcome_tuple)
 
             self.update_rollout_policy(obs, action, outcome_tuple, rollout_buffer)
 
@@ -130,7 +129,6 @@ class BaseAgent(ABC):
 
             if done or truncated:
                 obs = task.reset()[0]
-                run_id += 1
 
         return True
 
@@ -400,6 +398,10 @@ class BaseVaeAgent(BaseAgent, StateInferenceMixin, ABC, pl.LightningModule):
     def initialize_buffer(self):
         return RolloutBuffer(capacity=self.buffer_capacity)
 
+    def _log_rollout_statistics(self, rollout_buffer: RolloutBuffer):
+        # self.log()
+        pass
+
     def training_step(self, batch=None, batch_idx=None):
         """This corresponds to a single epoch of training."""
 
@@ -408,18 +410,7 @@ class BaseVaeAgent(BaseAgent, StateInferenceMixin, ABC, pl.LightningModule):
         # collect rollouts
         if not self.collect_rollouts(n_rollout_steps, self.rollout_buffer):
             return
-
-        self.log("train/num_timesteps", self.num_timesteps, **self.log_kwargs)
-        self.log(
-            "train/Average Reward",
-            self.rollout_buffer.get_average_reward(),
-            prog_bar=True,
-        )
-        self.log(
-            "train/Average Episode Length",
-            self.rollout_buffer.get_average_run_length(),
-            **self.log_kwargs,
-        )
+        self._log_rollout_statistics(self.rollout_buffer)
 
         # update the model
         self.update_from_batch(self.rollout_buffer)
