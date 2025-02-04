@@ -12,14 +12,11 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import yaml
-from pytorch_lightning.loggers import TensorBoardLogger
-from stable_baselines3.common.monitor import Monitor
 
 from src.model.agents.lookahead_value_iteration import (
-    LookaheadViAgent as ValueIterationAgent,
+    ValueIterationAgent as ValueIterationAgent,
 )
 from src.model.state_inference.vae import StateVae
-from src.model.training.callbacks import ThreadTheNeedleCallback
 from src.model.training.rollout_data import RolloutBuffer as Buffer
 from src.task.gridworld import CnnWrapper, GridWorldEnv
 from src.task.gridworld import ThreadTheNeedleEnv as Environment

@@ -5,7 +5,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 
-from ..value_iteration.models.value_iteration_network import ValueIterationNetwork
 from .observation_model import ObservationModel
 from .reward_model import RewardModel
 from .thread_the_needle import make_thread_the_needle_walls
@@ -27,6 +26,7 @@ class GridWorldEnv(gym.Env):
         random_initial_state: bool = True,
         max_steps: Optional[int] = None,
         return_state_values: bool = True,
+        gamma_value_iteration: float = 0.9,
         **kwargs,
     ) -> None:
         self.transition_model = transition_model

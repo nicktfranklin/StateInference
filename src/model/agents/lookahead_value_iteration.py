@@ -21,7 +21,7 @@ from .utils.base_agent import BaseVaeAgent
 from .utils.tabular_agent_pytorch import DynaWithViAgent
 
 
-class LookaheadViAgent(BaseVaeAgent):
+class ValueIterationAgent(BaseVaeAgent):
     """
     Value iteration agent. Collects rollouts using Q-learning with an optimistic exploration
     policy on a state-inference model (VAE) and then updates the state-inference model with the
@@ -177,14 +177,14 @@ class LookaheadViAgent(BaseVaeAgent):
         self.model_based_agent.update(s, a, r, sp, done)
 
     def get_policy(self, obs: Tensor):
-        # s = self._get_state_hashkey(obs)
-        # if s == -1:
-        #     return self.dist.proba_distribution(
-        #         torch.ones(self.env.action_space.n) / self.env.action_space.n
-        #     )
-        # q = self.model_based_agent.get_q_values(s)
-        # return self.dist.proba_distribution(q * self.softmax_gain)
-        return self.dist.proba_distribution(torch.ones(self.env.action_space.n))
+        s = self._get_state_hashkey(obs)
+        if s == -1:
+            return self.dist.proba_distribution(
+                torch.ones(self.env.action_space.n) / self.env.action_space.n
+            )
+        q = self.model_based_agent.get_q_values(s)
+        return self.dist.proba_distribution(q * self.softmax_gain)
+        # return self.dist.proba_distribution(torch.ones(self.env.action_space.n))
 
     def get_pmf(self, obs: FloatTensor) -> np.ndarray:
         if obs.ndim == 3:

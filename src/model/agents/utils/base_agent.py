@@ -410,7 +410,7 @@ class BaseVaeAgent(BaseAgent, ABC, pl.LightningModule):
         self.log(
             "train/Average Reward",
             self.rollout_buffer.get_average_reward(),
-            **self.log_kwargs,
+            prog_bar=True,
         )
         self.log(
             "train/Average Episode Length",
