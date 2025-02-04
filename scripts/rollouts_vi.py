@@ -8,14 +8,11 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import numpy as np
 import pytorch_lightning as pl
 import torch
 import yaml
 
-from src.model.agents.lookahead_value_iteration import (
-    ValueIterationAgent as ValueIterationAgent,
-)
+from src.model.agents.value_iteration import ValueIterationAgent as ValueIterationAgent
 from src.model.state_inference.vae import StateVae
 from src.model.training.rollout_data import RolloutBuffer as Buffer
 from src.task.gridworld import CnnWrapper, GridWorldEnv
