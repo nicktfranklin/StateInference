@@ -3,7 +3,6 @@ from typing import List, Tuple, Union
 import numpy as np
 from scipy import sparse
 from tqdm.notebook import trange
-
 from valueiteration.utils import softmax
 
 

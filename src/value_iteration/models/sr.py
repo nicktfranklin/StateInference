@@ -5,9 +5,12 @@ import numpy as np
 import scipy
 from scipy.special import logsumexp
 from tqdm import tqdm
-
-from valueiteration.utils import calculate_sr_from_transitions, inverse_cmf_sampler, one_hot
 from valueiteration.models.value_iteration_network import ValueIterationNetwork
+from valueiteration.utils import (
+    calculate_sr_from_transitions,
+    inverse_cmf_sampler,
+    one_hot,
+)
 
 
 def get_state_action_reward_from_sucessor_rewards(
