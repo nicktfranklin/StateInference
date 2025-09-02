@@ -2,13 +2,22 @@ from random import sample
 from typing import List, Optional, Union
 
 import numpy as np
+import scipy
 from scipy.special import logsumexp
 from tqdm import tqdm
 
-from src.task.thread_the_needle import get_state_action_reward_from_sucessor_rewards
+from valueiteration.utils import calculate_sr_from_transitions, inverse_cmf_sampler, one_hot
+from valueiteration.models.value_iteration_network import ValueIterationNetwork
 
-from .utils import calculate_sr_from_transitions, inverse_cmf_sampler, one_hot
-from .value_iteration_network import ValueIterationNetwork
+
+def get_state_action_reward_from_sucessor_rewards(
+    reward_function_over_sucessors: np.ndarray,
+    transitions: List[Union[np.ndarray, scipy.sparse.csr_matrix]],
+) -> List[Union[np.ndarray, scipy.sparse.csr_matrix]]:
+    reward_function_over_sa = [
+        t.dot(reward_function_over_sucessors) for t in transitions
+    ]
+    return reward_function_over_sa
 
 
 def get_optimal_sr_from_transitions(
