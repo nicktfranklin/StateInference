@@ -1,47 +1,21 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project]
-name = "state_inference"
+name = "valueiteration"
 version = "0.1.0"
-description = "State inference project"
-requires-python = ">=3.10.13"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
 dependencies = [
-    "torch",
-    "torchvision",
-    "scikit-learn",
-    "tqdm",
-    "seaborn",
-    "notebook",
-    "stable-baselines3",
-    "ipywidgets",
-    "rich",
-    "tensorboard>=1.15",
-    "memory_profiler",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.6",
+    "numpy>=2.3.2",
+    "seaborn>=0.13.2",
+    "torch>=2.8.0",
+    "tqdm>=4.67.1",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest",
-    "black",
-    "isort",
-    "mypy",
-]
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src"]
-
-[tool.pytest.ini_options]
-addopts = "-ra -q"
-testpaths = [
-    "tests",
-]
-
-[tool.black]
-line-length = 88
-target-version = ["py310"]
-
-[tool.isort]
-profile = "black"
-multi_line_output = 3
+[tool.setuptools.packages.find]
+where = ["src"]

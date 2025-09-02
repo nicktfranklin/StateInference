@@ -4,7 +4,7 @@ import numpy as np
 from scipy import sparse
 from tqdm.notebook import trange
 
-from .utils import softmax
+from ..utils import softmax
 
 
 class PlanningModel:
