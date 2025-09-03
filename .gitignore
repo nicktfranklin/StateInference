@@ -233,3 +233,4 @@ outputs/
 logs/
 
 src/valueiteration.egg-info/*
+*__pycache__*

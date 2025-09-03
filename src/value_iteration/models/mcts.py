@@ -6,7 +6,8 @@ from typing import List, Tuple, Union
 import numpy as np
 from scipy import sparse
 from tqdm import tqdm
-from valueiteration.utils import (
+
+from value_iteration.utils import (
     calculate_sr_from_transitions,
     inverse_cmf_sampler,
     softmax,
