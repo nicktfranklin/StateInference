@@ -231,6 +231,8 @@ experiments/
 results/
 outputs/
 logs/
+images/
 
 src/valueiteration.egg-info/*
 *__pycache__*
+clean_notebook.py

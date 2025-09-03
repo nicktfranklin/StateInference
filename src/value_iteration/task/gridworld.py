@@ -5,7 +5,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 
-from ..value_iteration.models.value_iteration_network import ValueIterationNetwork
 from .observation_model import ObservationModel
 from .reward_model import RewardModel
 from .thread_the_needle import make_thread_the_needle_walls
