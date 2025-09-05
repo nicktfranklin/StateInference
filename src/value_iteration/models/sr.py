@@ -6,12 +6,12 @@ import scipy
 from scipy.special import logsumexp
 from tqdm import tqdm
 
-from value_iteration.models.value_iteration_network import ValueIterationNetwork
-from value_iteration.utils import (
+from value_iteration.models.utils import (
     calculate_sr_from_transitions,
     inverse_cmf_sampler,
     one_hot,
 )
+from value_iteration.models.value_iteration_network import ValueIterationNetwork
 
 
 def get_state_action_reward_from_sucessor_rewards(

@@ -7,7 +7,7 @@ import numpy as np
 from scipy import sparse
 from tqdm import tqdm
 
-from value_iteration.utils import (
+from value_iteration.models.utils import (
     calculate_sr_from_transitions,
     inverse_cmf_sampler,
     softmax,
