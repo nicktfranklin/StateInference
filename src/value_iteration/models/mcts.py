@@ -96,6 +96,7 @@ class MCTS:
         self.expanded_nodes = dict()
         self.n_sims = n_sims
         self.gamma = gamma
+        self.bellman_updates = 0
 
         self.q = dict()
         self.n = dict()
@@ -143,6 +144,7 @@ class MCTS:
 
         self.q[node.state][child_action] += reward
         self.n[node.state][child_action] += 1
+        self.bellman_updates += 1
 
     def _get_ucb_values(self, node: GridWorldNode) -> np.ndarray:
         r = self.q[node.state] / self.n[node.state]
@@ -397,6 +399,7 @@ class MCTS:
         self.expanded_nodes = dict()
         self.q = dict()
         self.n = dict()
+        self.bellman_updates = 0
 
     def get_expanded_nodes(self) -> np.ndarray:
         states = np.zeros(self.n_states)
