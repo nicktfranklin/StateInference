@@ -47,6 +47,19 @@ class GridWorldNode(ABC, _GWN):
 
 
 class MCTS:
+    """Monte Carlo Tree Search implementation for grid world environments.
+
+    This class implements the standard MCTS algorithm with Upper Confidence Bounds (UCB)
+    for action selection. The algorithm builds a search tree by iteratively selecting
+    actions, expanding nodes, simulating rollouts, and backpropagating rewards.
+
+    The MCTS algorithm follows these four main phases:
+    1. Selection: Navigate from root using UCB until reaching unexplored node
+    2. Expansion: Add new child node to the tree
+    3. Simulation: Perform random rollout from new node
+    4. Backpropagation: Update Q-values and visit counts along path
+    """
+
     def __init__(
         self,
         end_states: List[int],
@@ -59,6 +72,19 @@ class MCTS:
         n_sims: int = 1,
         gamma: float = 0.99,
     ):
+        """Initialize MCTS algorithm.
+
+        Args:
+            end_states: List of terminal state indices
+            transition_functions: List of transition matrices, one per action
+            state_reward_function: Array of rewards for each state
+            exploration_weight: UCB exploration parameter (default: sqrt(2))
+            n_actions: Number of available actions (default: 4)
+            epsilon: Minimum visit count for initialization (default: 1)
+            max_depth: Maximum simulation depth (default: 1000)
+            n_sims: Number of simulations per rollout (default: 1)
+            gamma: Discount factor for rewards (default: 0.99)
+        """
         self.end_states = end_states
         self.transition_functions = transition_functions
         self.state_reward_function = state_reward_function
@@ -139,6 +165,18 @@ class MCTS:
         self,
         node: GridWorldNode,
     ) -> Tuple[List[Tuple[GridWorldNode, int]], GridWorldNode]:
+        """Selection phase of MCTS: navigate tree using UCB until unexplored node.
+
+        Traverses the tree from the given node using Upper Confidence Bounds (UCB)
+        action selection until reaching either an unexplored node or a terminal state.
+
+        Args:
+            node: Starting node for tree traversal
+
+        Returns:
+            Tuple of (path, leaf_node) where path is list of (node, action) pairs
+            taken during traversal and leaf_node is the final unexplored/terminal node
+        """
         # path is list of (state, action) tuples
         path = []
         reward, depth = 0, 0
@@ -161,6 +199,17 @@ class MCTS:
         return path, node
 
     def expand(self, node: GridWorldNode) -> int:
+        """Expansion phase of MCTS: add new node to the search tree.
+
+        Adds the given node to the expanded_nodes dictionary and initializes
+        its Q-values and visit counts. Returns the action selected for simulation.
+
+        Args:
+            node: Node to expand and add to the tree
+
+        Returns:
+            Action index selected for simulation, or -1 if node is terminal
+        """
         if self._is_terminal(node):
             return -1
         self.expanded_nodes[node.state] = node
@@ -209,16 +258,51 @@ class MCTS:
             depth += 1
 
     def simulate(self, node: GridWorldNode, action: int, k=None) -> float:
+        """Simulation phase of MCTS: perform random rollouts to estimate value.
+
+        Performs multiple random rollouts from the given node and action,
+        returning the average discounted reward obtained.
+
+        Args:
+            node: Starting node for simulation
+            action: Initial action to take
+            k: Number of simulations (defaults to self.n_sims)
+
+        Returns:
+            Average discounted reward from simulations
+        """
         iterations = k or self.n_sims
         return np.mean([self._single_sim(node, action) for _ in range(iterations)])
 
     def backpropagate(self, path: List[Tuple[GridWorldNode, int]], reward: float):
+        """Backpropagation phase of MCTS: update Q-values along the search path.
+
+        Updates Q-values and visit counts for all (node, action) pairs along
+        the path from leaf back to root using the reward from simulation.
+
+        Args:
+            path: List of (node, action) pairs from selection phase
+            reward: Reward value to backpropagate from simulation
+        """
         # path is a sequence of (state, action) tuples
         for node, action in reversed(path):
             self._update_child_value(node, action, reward)
 
     def do_single_rollout(self, start_state):
-        "Make the tree one layer better. (Train for one iteration.)"
+        """Perform one complete MCTS iteration (select-expand-simulate-backpropagate).
+
+        Executes all four phases of the MCTS algorithm starting from the given state:
+        1. Selection: Navigate tree using UCB to find leaf node
+        2. Expansion: Add leaf node to tree
+        3. Simulation: Perform random rollout to estimate value
+        4. Backpropagation: Update Q-values along path
+
+        Args:
+            start_state: GridWorldNode to start the rollout from
+
+        Returns:
+            Path taken during selection phase as list of (node, action) pairs
+        """
         path, leaf = self.select(start_state)
         a = self.expand(leaf)
         reward = self.simulate(leaf, a)
@@ -227,6 +311,16 @@ class MCTS:
         return path
 
     def do_rollouts(self, start_state, k=10, progress_bar: bool = True):
+        """Perform multiple MCTS rollouts to build the search tree.
+
+        Repeatedly calls do_single_rollout to iteratively improve the search tree
+        and value estimates. This is the main training loop for MCTS.
+
+        Args:
+            start_state: GridWorldNode to start all rollouts from
+            k: Number of rollouts to perform (default: 10)
+            progress_bar: Whether to show progress bar (default: True)
+        """
         if progress_bar:
             _iterator = tqdm(range(k), desc="MCTS Rollouts")
         else:
@@ -235,6 +329,15 @@ class MCTS:
             self.do_single_rollout(start_state)
 
     def get_policy(self):
+        """Extract the learned policy from the MCTS tree.
+
+        Returns the greedy policy based on Q-values for all expanded nodes.
+        Non-expanded states get policy value -1 indicating unknown.
+
+        Returns:
+            numpy.ndarray: Policy array where pi[s] gives best action for state s,
+            or -1 if state s has not been expanded
+        """
         pi = np.ones_like(self.state_reward_function, dtype=int) * -1
         for state, node in self.expanded_nodes.items():
             pi[state] = self._get_argmax_policy(node)
@@ -316,6 +419,16 @@ class MCTS:
 
 
 class MctsSr(MCTS):
+    """MCTS with Successor Representation for improved value estimation.
+
+    This variant of MCTS uses pre-computed state values from the Successor
+    Representation to provide better heuristic estimates during simulation,
+    potentially leading to faster convergence and better performance.
+
+    The key difference from standard MCTS is that instead of random rollouts,
+    it uses the SR-based state values for immediate value estimation.
+    """
+
     def __init__(
         self,
         end_states: List[int],
@@ -328,6 +441,14 @@ class MctsSr(MCTS):
         n_sims: int = 1,
         gamma: float = 0.99,
     ):
+        """Initialize MCTS with Successor Representation.
+
+        Extends the base MCTS with pre-computed state values using the
+        Successor Representation under a random policy for better heuristics.
+
+        Args:
+            Same as MCTS.__init__. See parent class for parameter descriptions.
+        """
         super().__init__(
             end_states,
             transition_functions,
@@ -347,6 +468,20 @@ class MctsSr(MCTS):
         self.state_values = sr.dot(state_reward_function)
 
     def simulate(self, node: GridWorldNode, action: int, k=None) -> float:
+        """Simulate using pre-computed SR state values instead of rollouts.
+
+        Instead of performing random rollouts, this method uses the pre-computed
+        state values from the Successor Representation to immediately return
+        an estimate of the value after taking the given action.
+
+        Args:
+            node: Current node
+            action: Action to take
+            k: Unused (kept for interface compatibility)
+
+        Returns:
+            Pre-computed state value of the successor state
+        """
         node = self._draw_random_sucessor(node, action)
         return self.state_values[node.state]
 
@@ -365,4 +500,12 @@ class MctsSr(MCTS):
         return node.expand()
 
     def update_heuristic_function(self, state_value_function: np.ndarray) -> None:
+        """Update the heuristic state value function.
+
+        Allows updating the state values used for simulation with new estimates,
+        useful for iterative improvement or when better value estimates become available.
+
+        Args:
+            state_value_function: New array of state values to use for heuristics
+        """
         self.state_values = state_value_function

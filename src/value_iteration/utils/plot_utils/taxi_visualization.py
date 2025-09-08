@@ -4,7 +4,7 @@ This module provides visualization tools for the taxi gridworld problem
 that uses a counter-based state representation (row, col, counter).
 """
 
-from typing import List, Tuple, Union
+from typing import Tuple
 
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
@@ -15,14 +15,7 @@ from matplotlib.patches import Rectangle
 from scipy.sparse import csr_matrix
 
 # Import the counter-based taxi problem implementation
-from value_iteration.task.taxi_problem import (
-    TaxiGridWorld,
-    create_taxi_transition_functions,
-    get_valid_neighbors,
-    make_gridworld_taxi,
-    pos_to_state,
-    state_to_pos,
-)
+from value_iteration.task.taxi_problem import make_gridworld_taxi, pos_to_state
 
 
 class TaxiVisualization:
