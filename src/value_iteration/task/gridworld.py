@@ -4,6 +4,8 @@ import gymnasium as gym
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+import yaml
+from pydantic import BaseModel
 
 from .observation_model import ObservationModel
 from .reward_model import RewardModel
@@ -14,36 +16,68 @@ from .utils import ActType, ObsType, RewType, StateType
 OutcomeTuple = tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]
 
 
+class GridWorldConfig(BaseModel):
+    transition_model: TransitionModel
+    reward_model: RewardModel
+    observation_model: ObservationModel
+    initial_state: Optional[int] = None
+    n_states: Optional[int] = None
+    end_state: Optional[list[int]] = None
+    random_initial_state: bool = True
+    max_steps: Optional[int] = None
+
+    class Config:
+        arbitrary_types_allowed = True
+
+
+class ThreadTheNeedleConfig(BaseModel):
+    height: int
+    width: int
+    map_height: int
+    state_rewards: dict[StateType, RewType]
+    observation_kwargs: dict[str, Any]
+    movement_penalty: float = 0.0
+    gridworld_env_kwargs: dict[str, Any] = {}
+
+    class Config:
+        arbitrary_types_allowed = True
+
+
+class OpenEnvConfig(BaseModel):
+    height: int
+    width: int
+    map_height: int
+    state_rewards: dict[StateType, RewType]
+    observation_kwargs: dict[str, Any]
+    movement_penalty: float = 0.0
+    gridworld_env_kwargs: dict[str, Any] = {}
+
+    class Config:
+        arbitrary_types_allowed = True
+
+
 class GridWorldEnv(gym.Env):
     def __init__(
         self,
-        transition_model: TransitionModel,
-        reward_model: RewardModel,
-        observation_model: ObservationModel,
-        initial_state: Optional[int] = None,
-        n_states: Optional[int] = None,
-        end_state: Optional[list[int]] = None,
-        random_initial_state: bool = True,
-        max_steps: Optional[int] = None,
-        **kwargs,
+        config: GridWorldConfig,
     ) -> None:
-        self.transition_model = transition_model
-        self.reward_model = reward_model
-        self.observation_model = observation_model
+        self.transition_model = config.transition_model
+        self.reward_model = config.reward_model
+        self.observation_model = config.observation_model
 
         # self.n_states = n_states if n_states else self.transition_model.n_states
-        self.n_states = n_states
-        self.initial_state = initial_state
+        self.n_states = config.n_states
+        self.initial_state = config.initial_state
         assert (
-            random_initial_state is not None or initial_state is not None
+            config.random_initial_state is not None or config.initial_state is not None
         ), "must specify either the inital location or random initialization"
         self.current_state = self._get_initial_state()
 
         self.observation = self.generate_observation(self.current_state)
-        self.states = np.arange(n_states)
-        self.end_state = end_state
+        self.states = np.arange(config.n_states)
+        self.end_state = config.end_state
         self.step_counter = 0
-        self.max_steps = max_steps
+        self.max_steps = config.max_steps
 
         # attributes for gym.Env
         # See: https://gymnasium.farama.org/api/env/
@@ -214,57 +248,92 @@ class GridWorldEnv(gym.Env):
         pass
 
 
+def load_env_from_config(config_path: str) -> GridWorldEnv:
+    """Load and instantiate the appropriate environment from YAML config file."""
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    env_class = config["env_class"]
+    env_kwargs = config["env_kwargs"]
+
+    if env_class == "thread_the_needle":
+        config_obj = ThreadTheNeedleConfig(
+            height=env_kwargs["height"],
+            width=env_kwargs["width"],
+            map_height=env_kwargs["map_height"],
+            state_rewards=env_kwargs["state_rewards"],
+            observation_kwargs=env_kwargs["observation_kwargs"],
+            movement_penalty=env_kwargs["movement_penalty"],
+            gridworld_env_kwargs={
+                "n_states": env_kwargs["n_states"],
+                "end_state": env_kwargs["end_state"],
+                "max_steps": env_kwargs.get("max_steps"),
+            },
+        )
+        return ThreadTheNeedleEnv(config_obj)
+
+    elif env_class == "open_env":
+        config_obj = OpenEnvConfig(
+            height=env_kwargs["height"],
+            width=env_kwargs["width"],
+            map_height=env_kwargs["map_height"],
+            state_rewards=env_kwargs["state_rewards"],
+            observation_kwargs=env_kwargs["observation_kwargs"],
+            movement_penalty=env_kwargs["movement_penalty"],
+            gridworld_env_kwargs={
+                "n_states": env_kwargs["n_states"],
+                "end_state": env_kwargs["end_state"],
+            },
+        )
+        return OpenEnv(config_obj)
+
+    else:
+        raise ValueError(
+            f"Unknown env_class: {env_class}. Supported: 'thread_the_needle', 'open_env'"
+        )
+
+
 class ThreadTheNeedleEnv(GridWorldEnv):
-    @classmethod
-    def create_env(
-        cls,
-        height: int,
-        width: int,
-        map_height: int,
-        state_rewards: dict[StateType, RewType],
-        observation_kwargs: dict[str, Any],
-        movement_penalty: float = 0.0,
-        **gridworld_env_kwargs,
-    ):
+    def __init__(self, config: ThreadTheNeedleConfig):
         # Define the transitions for the thread the needle task
         walls = make_thread_the_needle_walls(20)
-        transition_model = TransitionModel(height, width, walls)
+        transition_model = TransitionModel(config.height, config.width, walls)
 
         observation_model = ObservationModel(
-            height, width, map_height, **observation_kwargs
+            config.height, config.width, config.map_height, **config.observation_kwargs
         )
 
-        reward_model = RewardModel(state_rewards, movement_penalty)
+        reward_model = RewardModel(config.state_rewards, config.movement_penalty)
 
-        return cls(
-            transition_model, reward_model, observation_model, **gridworld_env_kwargs
+        gridworld_config = GridWorldConfig(
+            transition_model=transition_model,
+            reward_model=reward_model,
+            observation_model=observation_model,
+            **config.gridworld_env_kwargs,
         )
 
+        super().__init__(gridworld_config)
 
-class OpenEnv(ThreadTheNeedleEnv):
-    @classmethod
-    def create_env(
-        cls,
-        height: int,
-        width: int,
-        map_height: int,
-        state_rewards: dict[StateType, RewType],
-        observation_kwargs: dict[str, Any],
-        movement_penalty: float = 0.0,
-        **gridworld_env_kwargs,
-    ):
-        # Define the transitions for the thread the needle task
-        transition_model = TransitionModel(height, width, None)
+
+class OpenEnv(GridWorldEnv):
+    def __init__(self, config: OpenEnvConfig):
+        # Define the transitions for the open environment
+        transition_model = TransitionModel(config.height, config.width, None)
 
         observation_model = ObservationModel(
-            height, width, map_height, **observation_kwargs
+            config.height, config.width, config.map_height, **config.observation_kwargs
         )
 
-        reward_model = RewardModel(state_rewards, movement_penalty)
+        reward_model = RewardModel(config.state_rewards, config.movement_penalty)
 
-        return cls(
-            transition_model, reward_model, observation_model, **gridworld_env_kwargs
+        gridworld_config = GridWorldConfig(
+            transition_model=transition_model,
+            reward_model=reward_model,
+            observation_model=observation_model,
+            **config.gridworld_env_kwargs,
         )
+
+        super().__init__(gridworld_config)
 
 
 class CnnWrapper(ThreadTheNeedleEnv):

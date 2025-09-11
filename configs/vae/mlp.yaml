@@ -1,0 +1,17 @@
+vae_kwargs:
+  z_dim: 5
+  z_layers: 4
+  beta: 1.0
+  tau: 0.5
+  tau_annealing_rate: 0.9997 
+encoder_class: MlpEncoder
+decoder_class: MlpDecoder
+encoder_kwargs:
+  hidden_sizes:
+    - 820
+    - 410
+
+decoder_kwargs:
+  hidden_sizes:
+    - 410
+    - 820
