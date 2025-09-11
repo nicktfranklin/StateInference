@@ -512,3 +512,49 @@ class MctsSr(MCTS):
             state_value_function: New array of state values to use for heuristics
         """
         self.state_values = state_value_function
+
+    def expected_discounted_rewards(
+        self, start_node: GridWorldNode, n_simulations: int = 100
+    ) -> float:
+        """Calculate expected discounted future rewards from a given start node.
+
+        Performs multiple random rollouts from the start node to estimate the expected
+        discounted cumulative reward under the current policy or random exploration.
+
+        Args:
+            start_node: Node to start the reward calculation from
+            n_simulations: Number of simulation runs to average over (default: 1000)
+
+        Returns:
+            Expected discounted future reward as a float
+        """
+        total_rewards = []
+
+        for _ in range(n_simulations):
+            node = start_node
+            total_reward = 0
+            depth = 0
+
+            while depth < self.max_depth and not self._is_terminal(node):
+                # Get immediate reward
+                immediate_reward = self._get_reward(node)
+                total_reward += immediate_reward * (self.gamma**depth)
+
+                # Select action (use learned policy if available, otherwise random)
+                if node.state in self.expanded_nodes:
+                    action = self._get_argmax_policy(node)
+                else:
+                    action = node.find_random_child()
+
+                # Move to next state
+                node = self._draw_random_sucessor(node, action)
+                depth += 1
+
+            # Add terminal reward if reached
+            if self._is_terminal(node):
+                terminal_reward = self._get_reward(node)
+                total_reward += terminal_reward * (self.gamma**depth)
+
+            total_rewards.append(total_reward)
+
+        return np.mean(total_rewards), np.std(total_rewards)
