@@ -23,7 +23,9 @@ import value_iteration.task.thread_the_needle as e
 
 # Import project modules
 from value_iteration.models import MCTS, GridWorldNode, MctsSr, ValueIterationNetwork
-from value_iteration.models.sr import get_optimal_sr_from_transitions
+from value_iteration.models.discrete_state_planners.sr import (
+    get_optimal_sr_from_transitions,
+)
 from value_iteration.task.thread_the_needle import find_sortest_path_length
 
 
