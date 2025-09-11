@@ -190,7 +190,7 @@ class UntiledValueIterationNetwork(ValueIterationNetwork):
         value = value_function
 
         state_action_values = np.zeros((n_states, n_actions))  # q(s, a)
-        q = [np.empty((n_states, n_actions))] * n_actions
+        q = np.zeros((n_actions, n_states))
 
         if return_interim_estimates:
             state_action_values = np.zeros((iterations, n_states, n_actions))
@@ -209,6 +209,103 @@ class UntiledValueIterationNetwork(ValueIterationNetwork):
 
         if return_interim_estimates:
             return state_action_values, value_function
+
+        value_function = value
+
+        state_action_values = np.array(q).T
+
+        return state_action_values, value_function
+
+
+class RandomGatedValueIterationNetwork(ValueIterationNetwork):
+    @staticmethod
+    def update_gates(
+        gates: np.ndarray, hazard_rate: float, random_state: int | None = None
+    ) -> np.ndarray:
+        """Apply a hazard rate to each gate and randomly flip them from open to closed"""
+
+        if random_state is not None:
+            np.random.seed(random_state)
+
+        result = gates.copy()
+
+        # Generate flip mask - True where we should flip
+        flip_mask = np.random.random(size=gates.shape) < hazard_rate
+
+        # Flip the values: 0 becomes 1, 1 becomes 0
+        result[flip_mask] = 1 - result[flip_mask]
+
+        return result
+
+    @staticmethod
+    def value_iteration(
+        transition_functions: List[Union[np.ndarray, sparse.csr_matrix]],
+        reward_functions: List[Union[np.ndarray, sparse.csr_matrix]],
+        n_rows: int,
+        n_columns: int,
+        gamma: float = 0.8,
+        time_steps: int = 100,
+        initialization_noise: float = 0.01,  # in standard deviation
+        return_interim_estimates: bool = False,
+        eta: float = 0.1,
+        hazard_rate: float = 0.5,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        For the reward, transition matrix, list indicies correspond to actions.  E.g.
+        the 0th action will have the 0the transition/reward function.
+
+        This assumes a square-grid structure
+        """
+
+        n_states = n_rows * n_columns
+        n_actions = len(reward_functions)
+
+        # initialize the value functions
+        value_function = ValueIterationNetwork._initialize_value_function(
+            n_rows, n_columns, initialization_noise
+        )
+        value = value_function
+
+        # initialize the gating function
+        gates = ValueIterationNetwork.define_lattice_tiling(n_rows, n_columns).astype(
+            int
+        )
+        # gates = np.random.choice([0, 1], size=(n_states), p=[0.5, 0.5])
+        print(gates)
+        print(gates.shape)
+
+        # initialize q values randomly
+        q = np.random.randn(n_states, n_actions)  # q(s, a)
+        delta_q = np.zeros((n_actions, n_states))
+
+        if return_interim_estimates:
+            state_action_values = np.zeros((time_steps, n_states, n_actions))
+            value_function = np.zeros((time_steps, n_states))
+
+        # dynamic programing algorithm
+        for ii in trange(0, time_steps):
+            # update gates
+            gates = RandomGatedValueIterationNetwork.update_gates(gates, hazard_rate)
+
+            # calculate deltas
+            for a, (r_a, t_a) in enumerate(zip(reward_functions, transition_functions)):
+                # delta_q[a] = gates * (r_a + gamma * t_a.dot(value) - q[a])
+                delta_q[a] = r_a + gamma * t_a.dot(value) - q[a]
+
+            # update q
+            # q = q + eta * delta_q
+            q = q + delta_q
+            value = np.max(q, axis=0)
+
+            # calculate deltas
+            # delta_q =
+
+            if return_interim_estimates:
+                value_function[ii, :] = value
+                state_action_values[ii, ...] = np.array(delta_q).T
+
+        if return_interim_estimates:
+            return q, value_function
 
         value_function = value
 
