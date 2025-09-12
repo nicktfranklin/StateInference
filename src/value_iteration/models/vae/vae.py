@@ -482,7 +482,7 @@ def load_vae_from_yaml(vae_config_path: str, env_config_path: str) -> StateVae:
     """
     vae_path = Path(vae_config_path)
     env_path = Path(env_config_path)
-    
+
     # Check files exist
     if not vae_path.exists():
         raise FileNotFoundError(f"VAE config not found: {vae_config_path}")
