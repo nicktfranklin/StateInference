@@ -1,8 +1,10 @@
-import sys
-from typing import Any, Dict, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+import yaml
+from pydantic import BaseModel, Field, field_validator
 from torch import FloatTensor, Tensor, nn
 from torch.distributions.categorical import Categorical
 from torch.distributions.kl import kl_divergence
@@ -16,18 +18,138 @@ from value_iteration.utils.pytorch_utils import (
     check_shape_match,
 )
 
-from .config import StateVAEConfig
-from .constants import (
-    INPUT_SHAPE,
-    OPTIM_KWARGS,
-    VAE_BETA,
-    VAE_TAU,
-    VAE_TAU_ANNEALING_RATE,
-)
+from .constants import OPTIM_KWARGS
 from .gumbel_softmax import gumbel_softmax
 
-# needed to import the Encoder/Decoder from config
-from .nets import *
+# Import encoder/decoder classes
+from .nets import (
+    AutoregressiveDeconvNet,
+    CnnDecoder,
+    CnnEncoder,
+    MlpDecoder,
+    MlpEncoder,
+)
+
+# Class registries for encoders and decoders
+ENCODER_REGISTRY = {
+    "CnnEncoder": CnnEncoder,
+    "MlpEncoder": MlpEncoder,
+}
+
+DECODER_REGISTRY = {
+    "CnnDecoder": CnnDecoder,
+    "MlpDecoder": MlpDecoder,
+    "AutoregressiveDeconvNet": AutoregressiveDeconvNet,
+}
+
+
+class EncoderConfig(BaseModel):
+    """Configuration for encoder networks."""
+
+    hidden_sizes: Optional[List[int]] = None
+    in_channels: Optional[int] = None
+    channels: Optional[List[int]] = None
+    kernel_sizes: Optional[List[int]] = None
+    strides: Optional[List[int]] = None
+    embedding_dim: Optional[int] = None
+    input_shape: Optional[Tuple[int, int, int]] = None
+
+
+class DecoderConfig(BaseModel):
+    """Configuration for decoder networks."""
+
+    hidden_sizes: Optional[List[int]] = None
+    output_channels: Optional[int] = None
+    channel_out: Optional[int] = None
+    channels: Optional[List[int]] = None
+    embedding_dim: Optional[int] = None
+    output_shape: Optional[Tuple[int, int, int]] = None
+
+
+class VAEConfig(BaseModel):
+    """Configuration for VAE model parameters."""
+
+    z_dim: int = Field(..., description="Dimension of each categorical variable")
+    z_layers: int = Field(..., description="Number of categorical variables")
+    beta: float = Field(default=1.0, description="Beta parameter for KL loss weighting")
+    tau: float = Field(
+        default=0.5, description="Temperature parameter for Gumbel softmax"
+    )
+    tau_annealing_rate: float = Field(
+        default=1.0, description="Rate at which tau is annealed during training"
+    )
+    tau_is_parameter: bool = Field(
+        default=False, description="Whether tau is a learnable parameter"
+    )
+    tau_min: float = Field(
+        default=1e-4, description="Minimum value for tau during annealing"
+    )
+    input_shape: Optional[Tuple[int, int, int]] = None
+    run_unit_test: bool = Field(
+        default=False, description="Run unit test during initialization"
+    )
+
+    @field_validator("tau_annealing_rate")
+    @classmethod
+    def validate_tau_annealing_rate(cls, v, info):
+        if info.data.get("tau_is_parameter", False) and v != 1.0:
+            raise ValueError(
+                "tau_annealing_rate must be 1.0 when tau_is_parameter is True"
+            )
+        return v
+
+
+class StateVAEConfig(BaseModel):
+    """Complete configuration for StateVAE model."""
+
+    encoder_class: str = Field(..., description="Name of the encoder class")
+    decoder_class: str = Field(..., description="Name of the decoder class")
+    encoder_kwargs: EncoderConfig = Field(default_factory=EncoderConfig)
+    decoder_kwargs: DecoderConfig = Field(default_factory=DecoderConfig)
+    vae_kwargs: VAEConfig = Field(..., description="VAE model parameters")
+
+    def prepare_for_instantiation(self, env_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare configuration for model instantiation with environment parameters."""
+
+        # Calculate input shape from environment
+        h = env_kwargs["map_height"]
+        input_shape = (1, h, h)
+
+        # Update VAE kwargs with input shape
+        vae_kwargs = self.vae_kwargs.model_copy()
+        vae_kwargs.input_shape = input_shape
+
+        # Calculate embedding dimension
+        embedding_dim = vae_kwargs.z_dim * vae_kwargs.z_layers
+
+        # Update encoder kwargs
+        encoder_kwargs = self.encoder_kwargs.model_copy()
+        encoder_kwargs.embedding_dim = embedding_dim
+        encoder_kwargs.input_shape = input_shape
+
+        # Update decoder kwargs
+        decoder_kwargs = self.decoder_kwargs.model_copy()
+        decoder_kwargs.embedding_dim = embedding_dim
+        decoder_kwargs.output_shape = input_shape
+
+        return {
+            "encoder_class": self.encoder_class,
+            "decoder_class": self.decoder_class,
+            "encoder_kwargs": encoder_kwargs.model_dump(exclude_none=True),
+            "decoder_kwargs": decoder_kwargs.model_dump(exclude_none=True),
+            "vae_kwargs": vae_kwargs.model_dump(exclude_none=True),
+        }
+
+    @classmethod
+    def from_yaml_dict(cls, config_dict: Dict[str, Any]) -> "StateVAEConfig":
+        """Create StateVAEConfig from YAML dictionary format."""
+        return cls(
+            encoder_class=config_dict["encoder_class"],
+            decoder_class=config_dict["decoder_class"],
+            encoder_kwargs=EncoderConfig(**config_dict.get("encoder_kwargs", {})),
+            decoder_kwargs=DecoderConfig(**config_dict.get("decoder_kwargs", {})),
+            vae_kwargs=VAEConfig(**config_dict["vae_kwargs"]),
+        )
 
 
 def unit_test_vae_reconstruction(model, input_shape):
@@ -45,41 +167,62 @@ def unit_test_vae_reconstruction(model, input_shape):
 class StateVae(nn.Module):
     def __init__(
         self,
-        encoder: nn.Module,
-        decoder: nn.Module,
-        z_dim: int,
-        z_layers: int,
-        beta: float = VAE_BETA,
-        tau: float = VAE_TAU,
-        tau_annealing_rate: float = VAE_TAU_ANNEALING_RATE,
-        input_shape: Tuple[int, int, int] = INPUT_SHAPE,
-        tau_is_parameter: bool = False,
-        tau_min: float = 1e-4,
-        *,
-        run_unit_test: bool = False,
+        config: StateVAEConfig,
+        env_kwargs: Dict[str, Any],
     ):
         """
+        Initialize StateVae from Pydantic config.
+
+        Args:
+            config: StateVAEConfig containing all model configuration
+            env_kwargs: Environment-specific parameters (e.g., map_height)
+
         Note: larger values of beta result in more independent state values
         """
         super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        self.z_layers = z_layers
-        self.z_dim = z_dim
-        self.beta = beta
-        self.tau = tau
-        self.tau_annealing_rate = tau_annealing_rate
-        self.input_shape = input_shape
-        self.tau_min = tau_min
 
+        # Prepare configuration with environment-specific parameters
+        prepared_config = config.prepare_for_instantiation(env_kwargs)
+
+        # Get encoder and decoder classes from registries
+        encoder_class = prepared_config["encoder_class"]
+        decoder_class = prepared_config["decoder_class"]
+
+        if encoder_class not in ENCODER_REGISTRY:
+            raise ValueError(
+                f"Unknown encoder class: {encoder_class}. Available: {list(ENCODER_REGISTRY.keys())}"
+            )
+        if decoder_class not in DECODER_REGISTRY:
+            raise ValueError(
+                f"Unknown decoder class: {decoder_class}. Available: {list(DECODER_REGISTRY.keys())}"
+            )
+
+        Encoder = ENCODER_REGISTRY[encoder_class]
+        Decoder = DECODER_REGISTRY[decoder_class]
+
+        # Create encoder and decoder instances
+        self.encoder = Encoder(**prepared_config["encoder_kwargs"])
+        self.decoder = Decoder(**prepared_config["decoder_kwargs"])
+
+        # Set VAE parameters from config
+        vae_kwargs = prepared_config["vae_kwargs"]
+        self.z_layers = vae_kwargs["z_layers"]
+        self.z_dim = vae_kwargs["z_dim"]
+        self.beta = vae_kwargs["beta"]
+        self.tau = vae_kwargs["tau"]
+        self.tau_annealing_rate = vae_kwargs["tau_annealing_rate"]
+        self.input_shape = tuple(vae_kwargs["input_shape"])
+        self.tau_min = vae_kwargs["tau_min"]
+
+        tau_is_parameter = vae_kwargs["tau_is_parameter"]
         if tau_is_parameter:
-            self.tau = torch.nn.Parameter(torch.tensor([tau]), requires_grad=True)
+            self.tau = torch.nn.Parameter(torch.tensor([self.tau]), requires_grad=True)
             assert (
                 self.tau_annealing_rate == 1.0
             ), "Must set tau annealing to 1 for learnable tau"
 
-        if run_unit_test:
-            unit_test_vae_reconstruction(self, input_shape)
+        if vae_kwargs["run_unit_test"]:
+            unit_test_vae_reconstruction(self, self.input_shape)
 
     def configure_optimizers(
         self,
@@ -92,41 +235,17 @@ class StateVae(nn.Module):
 
     @classmethod
     def make_from_configs(cls, vae_config: Dict[str, Any], env_kwargs: Dict[str, Any]):
+        """Deprecated: Use load_from_yaml_file() or direct __init__ instead."""
         # Convert dict to Pydantic model for validation and processing
         config = StateVAEConfig.from_yaml_dict(vae_config)
-
-        # Prepare configuration with environment-specific parameters
-        prepared_config = config.prepare_for_instantiation(env_kwargs)
-
-        # Get encoder and decoder classes
-        Encoder = getattr(sys.modules[__name__], prepared_config["encoder_class"])
-        Decoder = getattr(sys.modules[__name__], prepared_config["decoder_class"])
-
-        # Create encoder and decoder instances
-        encoder = Encoder(**prepared_config["encoder_kwargs"])
-        decoder = Decoder(**prepared_config["decoder_kwargs"])
-
-        # Create VAE instance
-        return cls(encoder, decoder, **prepared_config["vae_kwargs"])
+        return cls(config, env_kwargs)
 
     @classmethod
     def make_from_pydantic_config(
         cls, config: StateVAEConfig, env_kwargs: Dict[str, Any]
     ):
-        """Create StateVae from Pydantic config object directly."""
-        # Prepare configuration with environment-specific parameters
-        prepared_config = config.prepare_for_instantiation(env_kwargs)
-
-        # Get encoder and decoder classes
-        Encoder = getattr(sys.modules[__name__], prepared_config["encoder_class"])
-        Decoder = getattr(sys.modules[__name__], prepared_config["decoder_class"])
-
-        # Create encoder and decoder instances
-        encoder = Encoder(**prepared_config["encoder_kwargs"])
-        decoder = Decoder(**prepared_config["decoder_kwargs"])
-
-        # Create VAE instance
-        return cls(encoder, decoder, **prepared_config["vae_kwargs"])
+        """Deprecated: Use direct __init__ instead."""
+        return cls(config, env_kwargs)
 
     def reparameterize(self, logits):
         """
@@ -342,3 +461,43 @@ class StateVae(nn.Module):
                 print(f"Epoch {epoch}, ELBO Loss (test) {test_losses[-1]:.6f}")
 
         return train_losses, test_losses
+
+
+def load_vae_from_yaml(vae_config_path: str, env_config_path: str) -> StateVae:
+    """
+    Load a StateVae model from YAML configuration files.
+
+    Args:
+        vae_config_path: Absolute path to VAE config file
+        env_config_path: Absolute path to environment/task config file
+
+    Returns:
+        StateVae: Initialized model
+
+    Examples:
+        model = load_vae_from_yaml(
+            "/path/to/configs/vae/cnn.yaml",
+            "/path/to/configs/tasks/open_env_config.yaml"
+        )
+    """
+    vae_path = Path(vae_config_path)
+    env_path = Path(env_config_path)
+    
+    # Check files exist
+    if not vae_path.exists():
+        raise FileNotFoundError(f"VAE config not found: {vae_config_path}")
+    if not env_path.exists():
+        raise FileNotFoundError(f"Environment config not found: {env_config_path}")
+
+    # Load environment config
+    with open(env_path, "r") as f:
+        env_yaml = yaml.safe_load(f)
+    env_kwargs = env_yaml.get("env_kwargs", {})
+
+    # Load VAE config
+    with open(vae_path, "r") as f:
+        vae_yaml = yaml.safe_load(f)
+
+    # Convert to Pydantic config and create model
+    config = StateVAEConfig.from_yaml_dict(vae_yaml)
+    return StateVae(config, env_kwargs)
