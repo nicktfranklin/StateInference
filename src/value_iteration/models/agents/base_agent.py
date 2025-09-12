@@ -106,7 +106,7 @@ class BaseAgent(ABC):
         self,
         n_rollout_steps: int,
         rollout_buffer: BaseBuffer,
-        callback: BaseCallback,
+        callback: BaseCallback | None = None,
         progress_bar: Iterable | bool = False,
     ) -> bool:
         task = self.get_task()
@@ -114,7 +114,8 @@ class BaseAgent(ABC):
         state = self._init_state()
         episode_start = True
 
-        callback.on_rollout_start()
+        if callback is not None:
+            callback.on_rollout_start()
 
         for _ in range(n_rollout_steps):
             action, state = self.predict(obs, state, episode_start, deterministic=False)
@@ -132,12 +133,14 @@ class BaseAgent(ABC):
             if done or truncated:
                 obs = task.reset()[0]
 
-            callback.update_locals(locals())
-            if not callback.on_step():
-                return False
+            if callback is not None:
+                callback.update_locals(locals())
+                if not callback.on_step():
+                    return False
 
-        callback.update_locals(locals())
-        callback.on_rollout_end()
+        if callback is not None:
+            callback.update_locals(locals())
+            callback.on_rollout_end()
 
         return True
 

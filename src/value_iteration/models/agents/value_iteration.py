@@ -3,7 +3,6 @@ from typing import Any, Dict, Hashable, Optional
 
 import numpy as np
 import torch
-from src.utils.pytorch_utils import DEVICE, convert_8bit_to_float
 from stable_baselines3.common.callbacks import BaseCallback
 from torch import FloatTensor, Tensor
 from torch.utils.data import DataLoader
@@ -11,6 +10,7 @@ from tqdm import trange
 
 from value_iteration.models.vae import StateVae
 from value_iteration.task.utils import ActType
+from value_iteration.utils.pytorch_utils import DEVICE, convert_8bit_to_float
 
 from .base_agent import BaseVaeAgent
 from .training.data import MdpDataset
