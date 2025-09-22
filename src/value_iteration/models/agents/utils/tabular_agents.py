@@ -3,8 +3,9 @@ from random import choices
 from typing import Any, Dict, Hashable, List, Optional
 
 import numpy as np
-from src.task.utils import ActType
-from src.utils.sampling_functions import inverse_cmf_sampler
+
+from value_iteration.task.utils import ActType
+from value_iteration.utils.sampling_functions import inverse_cmf_sampler
 
 
 class TabularTransitionEstimator:

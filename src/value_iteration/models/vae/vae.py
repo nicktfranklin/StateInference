@@ -463,22 +463,16 @@ class StateVae(nn.Module):
         return train_losses, test_losses
 
 
-def load_vae_from_yaml(vae_config_path: str, env_config_path: str) -> StateVae:
+def resolve_vae_config(vae_config_path: str, env_config_path: str) -> tuple[StateVAEConfig, Dict[str, Any]]:
     """
-    Load a StateVae model from YAML configuration files.
-
+    Resolve VAE and environment config files to config objects.
+    
     Args:
         vae_config_path: Absolute path to VAE config file
         env_config_path: Absolute path to environment/task config file
-
+    
     Returns:
-        StateVae: Initialized model
-
-    Examples:
-        model = load_vae_from_yaml(
-            "/path/to/configs/vae/cnn.yaml",
-            "/path/to/configs/tasks/open_env_config.yaml"
-        )
+        tuple: (StateVAEConfig, env_kwargs dict)
     """
     vae_path = Path(vae_config_path)
     env_path = Path(env_config_path)
@@ -498,6 +492,27 @@ def load_vae_from_yaml(vae_config_path: str, env_config_path: str) -> StateVae:
     with open(vae_path, "r") as f:
         vae_yaml = yaml.safe_load(f)
 
-    # Convert to Pydantic config and create model
+    # Convert to Pydantic config
     config = StateVAEConfig.from_yaml_dict(vae_yaml)
+    return config, env_kwargs
+
+
+def load_vae_from_yaml(vae_config_path: str, env_config_path: str) -> StateVae:
+    """
+    Load a StateVae model from YAML configuration files.
+
+    Args:
+        vae_config_path: Absolute path to VAE config file
+        env_config_path: Absolute path to environment/task config file
+
+    Returns:
+        StateVae: Initialized model
+
+    Examples:
+        model = load_vae_from_yaml(
+            "/path/to/configs/vae/cnn.yaml",
+            "/path/to/configs/tasks/open_env_config.yaml"
+        )
+    """
+    config, env_kwargs = resolve_vae_config(vae_config_path, env_config_path)
     return StateVae(config, env_kwargs)

@@ -1,13 +1,16 @@
 import random
 from typing import Any, Dict, Hashable, Optional
 
+import gymnasium as gym
 import numpy as np
 import torch
+from pydantic import BaseModel
 from stable_baselines3.common.callbacks import BaseCallback
 from torch import FloatTensor, Tensor
 from torch.utils.data import DataLoader
 from tqdm import trange
 
+from value_iteration.models import vae
 from value_iteration.models.vae import StateVae
 from value_iteration.task.utils import ActType
 from value_iteration.utils.pytorch_utils import DEVICE, convert_8bit_to_float
@@ -21,6 +24,21 @@ from .utils.tabular_agents import (
     TabularStateActionTransitionEstimator,
     value_iteration,
 )
+
+
+class ValueIterationAgentConfig(BaseModel):
+    optim_kwargs: Optional[Dict[str, Any]] = None
+    grad_clip: bool = True
+    batch_size: int = 64
+    gamma: float = 0.99
+    n_iter: int = 1000
+    softmax_gain: float = 1.0
+    epsilon: float = 0.05
+    n_steps: Optional[int] = None  # None => only update at the end
+    n_epochs: int = 10
+    alpha: float = 0.05
+    dyna_updates: int = 5
+    persistant_optim: bool = False
 
 
 class ValueIterationAgent(BaseVaeAgent):
@@ -38,51 +56,40 @@ class ValueIterationAgent(BaseVaeAgent):
 
     def __init__(
         self,
-        task,
-        state_inference_model: StateVae,
-        optim_kwargs: Optional[Dict[str, Any]] = None,
-        grad_clip: bool = True,
-        batch_size: int = 64,
-        gamma: float = 0.99,
-        n_iter: int = 1000,
-        softmax_gain: float = 1.0,
-        epsilon: float = 0.05,
-        n_steps: Optional[int] = None,  # None => only update at the end,
-        n_epochs: int = 10,
-        alpha: float = 0.05,
-        dyna_updates: int = 5,
-        persistant_optim: bool = False,
+        task: gym.Env,
+        vae_model: StateVae,
+        config: ValueIterationAgentConfig,
     ) -> None:
         """
         :param n_steps: The number of steps to run for each environment per update
         """
         super().__init__(task)
-        self.state_inference_model = state_inference_model.to(DEVICE)
+        self.state_inference_model = vae_model.to(DEVICE)
 
         self.optim = (
-            self.state_inference_model.configure_optimizers(optim_kwargs)
-            if persistant_optim
+            self.state_inference_model.configure_optimizers(config.optim_kwargs)
+            if config.persistant_optim
             else None
         )
-        self.grad_clip = grad_clip
-        self.batch_size = batch_size
-        self.gamma = gamma
-        self.n_iter = n_iter
-        self.n_steps = n_steps
-        self.n_epochs = n_epochs
-        self.alpha = alpha
+        self.grad_clip = config.grad_clip
+        self.batch_size = config.batch_size
+        self.gamma = config.gamma
+        self.n_iter = config.n_iter
+        self.n_steps = config.n_steps
+        self.n_epochs = config.n_epochs
+        self.alpha = config.alpha
 
         self.env = task
 
         self.transition_estimator = self.TRANSITION_MODEL_CLASS()
         self.reward_estimator = self.REWARD_MODEL_CLASS()
         self.policy = self.POLICY_CLASS(
-            beta=softmax_gain,
-            epsilon=epsilon,
+            beta=config.softmax_gain,
+            epsilon=config.epsilon,
             n_actions=task.action_space.n,
         )
 
-        assert epsilon >= 0 and epsilon < 1.0
+        assert config.epsilon >= 0 and config.epsilon < 1.0
 
         self.hash_vector = np.array(
             [
@@ -93,7 +100,7 @@ class ValueIterationAgent(BaseVaeAgent):
 
         self.num_timesteps = 0
         self.value_function = None
-        self.n_dyna_updates = dyna_updates
+        self.n_dyna_updates = config.dyna_updates
 
     def _init_state(self):
         return None
@@ -288,20 +295,6 @@ class ValueIterationAgent(BaseVaeAgent):
             buffer_class=buffer_class,
             buffer_kwargs=buffer_kwargs,
         )
-
-    @classmethod
-    def make_from_configs(
-        cls,
-        task,
-        agent_config: Dict[str, Any],
-        vae_config: Dict[str, Any],
-        env_kwargs: Dict[str, Any],
-    ):
-        VaeClass = getattr(
-            src.model.state_inference.vae, agent_config["vae_model_class"]
-        )
-        vae = VaeClass.make_from_configs(vae_config, env_kwargs)
-        return cls(task, vae, **agent_config["state_inference_model"])
 
     def get_graph_laplacian(
         self, normalized: bool = True
