@@ -214,6 +214,11 @@ class StateVae(nn.Module):
         self.input_shape = tuple(vae_kwargs["input_shape"])
         self.tau_min = vae_kwargs["tau_min"]
 
+        # Initialize hash vector for discrete state inference
+        self.hash_vector = torch.tensor([
+            self.z_dim**ii for ii in range(self.z_layers)
+        ], dtype=torch.float32, device=DEVICE)
+
         tau_is_parameter = vae_kwargs["tau_is_parameter"]
         if tau_is_parameter:
             self.tau = torch.nn.Parameter(torch.tensor([self.tau]), requires_grad=True)
@@ -366,6 +371,34 @@ class StateVae(nn.Module):
 
             state_vars = torch.argmax(z, dim=-1).detach().cpu()
         return state_vars
+
+    def get_states(self, x):
+        """
+        Get discrete state hash using hash vector.
+
+        Args:
+            x: Input tensor of shape NxCxHxW or CxHxW
+
+        Returns:
+            Discrete state hash as a scalar (for single input) or tensor (for batch)
+        """
+        assert x.ndim <= 4
+        assert_correct_end_shape(x, self.input_shape)
+
+        self.eval()
+        with torch.no_grad():
+            _, z = self.encode(x.to(DEVICE))
+            state_vars = torch.argmax(z, dim=-1).float()  # Shape: (batch_size, z_layers)
+
+            # Compute hash using dot product with hash vector
+            if state_vars.ndim == 1:
+                # Single example
+                discrete_hash = torch.dot(state_vars, self.hash_vector).item()
+            else:
+                # Batch of examples
+                discrete_hash = torch.matmul(state_vars, self.hash_vector).detach().cpu()
+
+        return discrete_hash
 
     def sample_state(self, x):
         """

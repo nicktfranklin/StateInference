@@ -297,7 +297,7 @@ class StateFSQVAE(nn.Module):
                 + f"Commitment: {commit_loss:.4f}, beta: {self.beta}"
             )
 
-    def get_state(self, x):
+    def get_states(self, x):
         """
         Get discrete state representation from input.
 
@@ -317,9 +317,9 @@ class StateFSQVAE(nn.Module):
 
     def sample_state(self, x):
         """
-        For FSQ, sampling is deterministic, so this is the same as get_state.
+        For FSQ, sampling is deterministic, so this is the same as get_states.
         """
-        return self.get_state(x)
+        return self.get_states(x)
 
     def decode_state(self, state_index: int):
         """

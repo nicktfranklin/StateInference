@@ -18,13 +18,6 @@ class RandomVaeAgent(BaseVaeAgent):
         self.state_inference_model = state_inference_model.to(DEVICE)
         self.n_actions = task.action_space.n
 
-        self.hash_vector = np.array(
-            [
-                self.state_inference_model.z_dim**ii
-                for ii in range(self.state_inference_model.z_layers)
-            ]
-        )
-
     def _preprocess_obs(self, obs: Tensor) -> Tensor:
         obs = convert_8bit_to_float(obs)
         if obs.ndim == 3:
@@ -34,9 +27,7 @@ class RandomVaeAgent(BaseVaeAgent):
     def get_states(self, obs: Tensor):
         obs = obs if isinstance(obs, Tensor) else torch.tensor(obs)
         obs_ = self._preprocess_obs(obs)
-        with torch.no_grad():
-            z = self.state_inference_model.get_state(obs_)
-        return z.dot(self.hash_vector)
+        return self.state_inference_model.get_states(obs_)
 
     def get_pmf(self, x: FloatTensor) -> np.ndarray:
         batch_size = x.shape[0] if x.ndim > 1 else 1
