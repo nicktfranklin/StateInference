@@ -462,57 +462,61 @@ class StateVae(nn.Module):
 
         return train_losses, test_losses
 
+    @staticmethod
+    def _resolve_vae_config(
+        vae_config_path: str, env_config_path: str
+    ) -> tuple[StateVAEConfig, Dict[str, Any]]:
+        """
+        Resolve VAE and environment config files to config objects.
 
-def resolve_vae_config(vae_config_path: str, env_config_path: str) -> tuple[StateVAEConfig, Dict[str, Any]]:
-    """
-    Resolve VAE and environment config files to config objects.
-    
-    Args:
-        vae_config_path: Absolute path to VAE config file
-        env_config_path: Absolute path to environment/task config file
-    
-    Returns:
-        tuple: (StateVAEConfig, env_kwargs dict)
-    """
-    vae_path = Path(vae_config_path)
-    env_path = Path(env_config_path)
+        Args:
+            vae_config_path: Absolute path to VAE config file
+            env_config_path: Absolute path to environment/task config file
 
-    # Check files exist
-    if not vae_path.exists():
-        raise FileNotFoundError(f"VAE config not found: {vae_config_path}")
-    if not env_path.exists():
-        raise FileNotFoundError(f"Environment config not found: {env_config_path}")
+        Returns:
+            tuple: (StateVAEConfig, env_kwargs dict)
+        """
+        vae_path = Path(vae_config_path)
+        env_path = Path(env_config_path)
 
-    # Load environment config
-    with open(env_path, "r") as f:
-        env_yaml = yaml.safe_load(f)
-    env_kwargs = env_yaml.get("env_kwargs", {})
+        # Check files exist
+        if not vae_path.exists():
+            raise FileNotFoundError(f"VAE config not found: {vae_config_path}")
+        if not env_path.exists():
+            raise FileNotFoundError(f"Environment config not found: {env_config_path}")
 
-    # Load VAE config
-    with open(vae_path, "r") as f:
-        vae_yaml = yaml.safe_load(f)
+        # Load environment config
+        with open(env_path, "r") as f:
+            env_yaml = yaml.safe_load(f)
+        env_kwargs = env_yaml.get("env_kwargs", {})
 
-    # Convert to Pydantic config
-    config = StateVAEConfig.from_yaml_dict(vae_yaml)
-    return config, env_kwargs
+        # Load VAE config
+        with open(vae_path, "r") as f:
+            vae_yaml = yaml.safe_load(f)
 
+        # Convert to Pydantic config
+        config = StateVAEConfig.from_yaml_dict(vae_yaml)
+        return config, env_kwargs
 
-def load_vae_from_yaml(vae_config_path: str, env_config_path: str) -> StateVae:
-    """
-    Load a StateVae model from YAML configuration files.
+    @classmethod
+    def load_from_yaml(cls, vae_config_path: str, env_config_path: str) -> "StateVae":
+        """
+        Load a StateVae model from YAML configuration files.
 
-    Args:
-        vae_config_path: Absolute path to VAE config file
-        env_config_path: Absolute path to environment/task config file
+        Args:
+            vae_config_path: Absolute path to VAE config file
+            env_config_path: Absolute path to environment/task config file
 
-    Returns:
-        StateVae: Initialized model
+        Returns:
+            StateVae: Initialized model
 
-    Examples:
-        model = load_vae_from_yaml(
-            "/path/to/configs/vae/cnn.yaml",
-            "/path/to/configs/tasks/open_env_config.yaml"
+        Examples:
+            model = load_vae_from_yaml(
+                "/path/to/configs/vae/cnn.yaml",
+                "/path/to/configs/tasks/open_env_config.yaml"
+            )
+        """
+        config, env_kwargs = StateVae._resolve_vae_config(
+            vae_config_path, env_config_path
         )
-    """
-    config, env_kwargs = resolve_vae_config(vae_config_path, env_config_path)
-    return StateVae(config, env_kwargs)
+        return cls(config, env_kwargs)
