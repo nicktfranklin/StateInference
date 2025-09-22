@@ -4,20 +4,16 @@ FSQ-based VAE implementation using Finite Scalar Quantization.
 This module provides a VAE that uses FSQ instead of Gumbel Softmax for quantization.
 """
 
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
-import yaml
 from pydantic import BaseModel, Field, field_validator
-from torch import FloatTensor, Tensor, nn
-from torch.optim import Optimizer
-from torch.utils.data import DataLoader
-from tqdm import trange
+from torch import FloatTensor, Tensor
 
 from value_iteration.utils.pytorch_utils import DEVICE, assert_correct_end_shape
 
+from .base_vae import StateVae
 from .constants import OPTIM_KWARGS
 from .fsq import FSQ, calculate_codebook_size
 from .nets import (
@@ -128,7 +124,7 @@ class StateFSQVAEConfig(BaseModel):
         )
 
 
-class StateFSQVAE(nn.Module):
+class StateFSQVAE(StateVae):
     """
     State VAE using Finite Scalar Quantization (FSQ) instead of Gumbel Softmax.
 
@@ -251,12 +247,6 @@ class StateFSQVAE(nn.Module):
         """
         return F.mse_loss(z_continuous, z_quantized.detach())
 
-    def reconstruction_loss(self, x: FloatTensor, x_hat: FloatTensor) -> FloatTensor:
-        """Compute reconstruction loss."""
-        mse_loss = F.mse_loss(x_hat, x, reduction="none")
-        # Sum loss over dimensions in each example, average over batch
-        return mse_loss.view(x.shape[0], -1).sum(1).mean()
-
     def loss(self, x: FloatTensor, target: FloatTensor = None) -> FloatTensor:
         """
         Compute total loss for FSQ VAE.
@@ -338,64 +328,9 @@ class StateFSQVAE(nn.Module):
             z_quantized = self.fsq.dequantize(indices_tensor)
             return self.decode(z_quantized).detach().cpu()
 
-    def fit(
-        self,
-        n_epochs: int,
-        train_dataloader: DataLoader,
-        *,
-        test_dataloader: DataLoader | None = None,
-        optim: Optimizer | None = None,
-        grad_clip: int | None = None,
-        progress_bar: bool = False,
-        verbose: bool = False,
-    ):
-        """Training loop for FSQ VAE."""
-
-        assert not (verbose and progress_bar)
-
-        if progress_bar:
-            iterator = trange(n_epochs, desc="FSQ VAE Epochs")
-        else:
-            iterator = range(n_epochs)
-
-        optim = optim if optim is not None else self.configure_optimizers()
-
-        train_losses, test_losses = [], []
-        for epoch in iterator:
-
-            # Training
-            self.train()
-            for batch in train_dataloader:
-                optim.zero_grad()
-                loss = self.loss(batch)
-                loss.backward()
-
-                if grad_clip:
-                    torch.nn.utils.clip_grad_norm_(self.parameters(), grad_clip)
-
-                optim.step()
-                train_losses.append(loss.detach().cpu().item())
-
-            # Validation
-            if test_dataloader is None:
-                continue
-            self.eval()
-            with torch.no_grad():
-                test_loss = 0
-                for batch in test_dataloader:
-                    loss = self.loss(batch)
-                    test_loss += loss * test_dataloader.batch_size
-                avg_loss = test_loss / len(test_dataloader.dataset)
-                test_losses.append(avg_loss.item())
-
-            if verbose:
-                print(f"Epoch {epoch}, Loss (test) {test_losses[-1]:.6f}")
-
-        return train_losses, test_losses
-
-    @staticmethod
+    @classmethod
     def _resolve_fsq_vae_config(
-        vae_config_path: str, env_config_path: str
+        cls, vae_config_path: str, env_config_path: str
     ) -> tuple[StateFSQVAEConfig, Dict[str, Any]]:
         """
         Resolve FSQ VAE and environment config files to config objects.
@@ -407,30 +342,12 @@ class StateFSQVAE(nn.Module):
         Returns:
             tuple: (StateFSQVAEConfig, env_kwargs dict)
         """
-        vae_path = Path(vae_config_path)
-        env_path = Path(env_config_path)
-
-        # Check files exist
-        if not vae_path.exists():
-            raise FileNotFoundError(f"FSQ VAE config not found: {vae_config_path}")
-        if not env_path.exists():
-            raise FileNotFoundError(f"Environment config not found: {env_config_path}")
-
-        # Load environment config
-        with open(env_path, "r") as f:
-            env_yaml = yaml.safe_load(f)
-        env_kwargs = env_yaml.get("env_kwargs", {})
-
-        # Load FSQ VAE config
-        with open(vae_path, "r") as f:
-            vae_yaml = yaml.safe_load(f)
-
-        # Convert to Pydantic config
+        vae_yaml, env_kwargs = cls._load_configs(vae_config_path, env_config_path)
         config = StateFSQVAEConfig.from_yaml_dict(vae_yaml)
         return config, env_kwargs
 
     @classmethod
-    def load_from_config(
+    def load_from_yaml(
         cls, vae_config_path: str, env_config_path: str
     ) -> "StateFSQVAE":
         """
@@ -444,7 +361,7 @@ class StateFSQVAE(nn.Module):
             StateFSQVAE: Initialized model
 
         Examples:
-            model = load_fsq_vae_from_yaml(
+            model = StateFSQVAE.load_from_yaml(
                 "/path/to/configs/vae/fsq_cnn.yaml",
                 "/path/to/configs/tasks/open_env_config.yaml"
             )

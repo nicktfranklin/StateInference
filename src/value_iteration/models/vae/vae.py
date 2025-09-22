@@ -1,16 +1,11 @@
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
-import yaml
 from pydantic import BaseModel, Field, field_validator
-from torch import FloatTensor, Tensor, nn
+from torch import FloatTensor, Tensor
 from torch.distributions.categorical import Categorical
 from torch.distributions.kl import kl_divergence
-from torch.optim import Optimizer
-from torch.utils.data import DataLoader
-from tqdm import trange
 
 from value_iteration.utils.pytorch_utils import (
     DEVICE,
@@ -18,6 +13,7 @@ from value_iteration.utils.pytorch_utils import (
     check_shape_match,
 )
 
+from .base_vae import StateVae
 from .constants import OPTIM_KWARGS
 from .gumbel_softmax import gumbel_softmax
 
@@ -164,14 +160,14 @@ def unit_test_vae_reconstruction(model, input_shape):
         ), f"Reconstruction Shape {tuple(x_hat.shape)} Doesn't match Input {input_shape}"
 
 
-class StateVae(nn.Module):
+class StateGumbelSoftmaxVae(StateVae):
     def __init__(
         self,
         config: StateVAEConfig,
         env_kwargs: Dict[str, Any],
     ):
         """
-        Initialize StateVae from Pydantic config.
+        Initialize StateGumbelSoftmaxVae from Pydantic config.
 
         Args:
             config: StateVAEConfig containing all model configuration
@@ -215,9 +211,11 @@ class StateVae(nn.Module):
         self.tau_min = vae_kwargs["tau_min"]
 
         # Initialize hash vector for discrete state inference
-        self.hash_vector = torch.tensor([
-            self.z_dim**ii for ii in range(self.z_layers)
-        ], dtype=torch.float32, device=DEVICE)
+        self.hash_vector = torch.tensor(
+            [self.z_dim**ii for ii in range(self.z_layers)],
+            dtype=torch.float32,
+            device=DEVICE,
+        )
 
         tau_is_parameter = vae_kwargs["tau_is_parameter"]
         if tau_is_parameter:
@@ -240,7 +238,7 @@ class StateVae(nn.Module):
 
     @classmethod
     def make_from_configs(cls, vae_config: Dict[str, Any], env_kwargs: Dict[str, Any]):
-        """Deprecated: Use load_from_yaml_file() or direct __init__ instead."""
+        """Deprecated: Use load_from_yaml() or direct __init__ instead."""
         # Convert dict to Pydantic model for validation and processing
         config = StateVAEConfig.from_yaml_dict(vae_config)
         return cls(config, env_kwargs)
@@ -325,11 +323,6 @@ class StateVae(nn.Module):
 
         return kl * self.beta
 
-    def recontruction_loss(self, x: FloatTensor, x_hat: FloatTensor) -> FloatTensor:
-        mse_loss = F.mse_loss(x_hat, x, reduction="none")
-        # sum loss over dimensions in each example, average over batch
-        return mse_loss.view(x.shape[0], -1).sum(1).mean()
-
     def loss(self, x: FloatTensor, target: FloatTensor = None) -> FloatTensor:
         x = x.to(DEVICE).float()
         (logits, _), y_hat = self(x)
@@ -339,7 +332,7 @@ class StateVae(nn.Module):
 
         # get the two components of the ELBO loss
         kl_loss = self.kl_loss(logits)
-        recon_loss = self.recontruction_loss(target, y_hat)
+        recon_loss = self.reconstruction_loss(target, y_hat)
 
         return recon_loss + kl_loss
 
@@ -350,7 +343,7 @@ class StateVae(nn.Module):
 
             # get the two components of the ELBO loss
             kl_loss = self.kl_loss(logits)
-            recon_loss = self.recontruction_loss(x, x_hat)
+            recon_loss = self.reconstruction_loss(x, x_hat)
 
             loss = recon_loss - kl_loss
             print(
@@ -388,7 +381,9 @@ class StateVae(nn.Module):
         self.eval()
         with torch.no_grad():
             _, z = self.encode(x.to(DEVICE))
-            state_vars = torch.argmax(z, dim=-1).float()  # Shape: (batch_size, z_layers)
+            state_vars = torch.argmax(
+                z, dim=-1
+            ).float()  # Shape: (batch_size, z_layers)
 
             # Compute hash using dot product with hash vector
             if state_vars.ndim == 1:
@@ -396,7 +391,9 @@ class StateVae(nn.Module):
                 discrete_hash = torch.dot(state_vars, self.hash_vector).item()
             else:
                 # Batch of examples
-                discrete_hash = torch.matmul(state_vars, self.hash_vector).detach().cpu()
+                discrete_hash = (
+                    torch.matmul(state_vars, self.hash_vector).detach().cpu()
+                )
 
         return discrete_hash
 
@@ -434,70 +431,13 @@ class StateVae(nn.Module):
             return
         self.tau *= self.tau_annealing_rate
 
-    def prep_next_batch(self):
+    def _post_epoch_processing(self):
+        """Handle tau annealing after each epoch."""
         self.anneal_tau()
 
-    def fit(
-        self,
-        n_epochs: int,
-        train_dataloader: DataLoader,
-        *,
-        test_dataloader: DataLoader | None = None,
-        optim: Optimizer | None = None,
-        grad_clip: int | None = None,
-        progress_bar: bool = False,
-        verbose: bool = False,
-    ):
-
-        assert not (verbose and progress_bar)
-
-        if progress_bar:
-            iterator = trange(n_epochs, desc="Vae Epochs")
-        else:
-            iterator = range(n_epochs)
-
-        optim = optim if optim is not None else self.configure_optimizers()
-
-        train_losses, test_losses = [], []
-        for epoch in iterator:
-
-            # training
-            self.train()
-            for batch in train_dataloader:
-
-                optim.zero_grad()
-                loss = self.loss(batch)
-                loss.backward()
-
-                if grad_clip:
-                    torch.nn.utils.clip_grad_norm_(self.parameters(), grad_clip)
-
-                optim.step()
-
-                train_losses.append(loss.detach().cpu().item())
-
-            # validation
-            if test_dataloader is None:
-                continue
-            self.eval()
-            with torch.no_grad():
-                test_loss = 0
-                for batch in test_dataloader:
-                    loss = self.loss(batch)
-                    test_loss += loss * test_dataloader.batch_size
-                avg_loss = test_loss / len(test_dataloader.dataset)
-                test_losses.append(avg_loss.item())
-
-            self.prep_next_batch()
-
-            if verbose:
-                print(f"Epoch {epoch}, ELBO Loss (test) {test_losses[-1]:.6f}")
-
-        return train_losses, test_losses
-
-    @staticmethod
+    @classmethod
     def _resolve_vae_config(
-        vae_config_path: str, env_config_path: str
+        cls, vae_config_path: str, env_config_path: str
     ) -> tuple[StateVAEConfig, Dict[str, Any]]:
         """
         Resolve VAE and environment config files to config objects.
@@ -509,47 +449,29 @@ class StateVae(nn.Module):
         Returns:
             tuple: (StateVAEConfig, env_kwargs dict)
         """
-        vae_path = Path(vae_config_path)
-        env_path = Path(env_config_path)
-
-        # Check files exist
-        if not vae_path.exists():
-            raise FileNotFoundError(f"VAE config not found: {vae_config_path}")
-        if not env_path.exists():
-            raise FileNotFoundError(f"Environment config not found: {env_config_path}")
-
-        # Load environment config
-        with open(env_path, "r") as f:
-            env_yaml = yaml.safe_load(f)
-        env_kwargs = env_yaml.get("env_kwargs", {})
-
-        # Load VAE config
-        with open(vae_path, "r") as f:
-            vae_yaml = yaml.safe_load(f)
-
-        # Convert to Pydantic config
+        vae_yaml, env_kwargs = cls._load_configs(vae_config_path, env_config_path)
         config = StateVAEConfig.from_yaml_dict(vae_yaml)
         return config, env_kwargs
 
     @classmethod
-    def load_from_yaml(cls, vae_config_path: str, env_config_path: str) -> "StateVae":
+    def load_from_yaml(
+        cls, vae_config_path: str, env_config_path: str
+    ) -> "StateGumbelSoftmaxVae":
         """
-        Load a StateVae model from YAML configuration files.
+        Load a StateGumbelSoftmaxVae model from YAML configuration files.
 
         Args:
             vae_config_path: Absolute path to VAE config file
             env_config_path: Absolute path to environment/task config file
 
         Returns:
-            StateVae: Initialized model
+            StateGumbelSoftmaxVae: Initialized model
 
         Examples:
-            model = load_vae_from_yaml(
+            model = StateGumbelSoftmaxVae.load_from_yaml(
                 "/path/to/configs/vae/cnn.yaml",
                 "/path/to/configs/tasks/open_env_config.yaml"
             )
         """
-        config, env_kwargs = StateVae._resolve_vae_config(
-            vae_config_path, env_config_path
-        )
+        config, env_kwargs = cls._resolve_vae_config(vae_config_path, env_config_path)
         return cls(config, env_kwargs)
