@@ -336,7 +336,7 @@ class StateFSQVAE(nn.Module):
             # Convert index to quantized values
             indices_tensor = torch.tensor([state_index], device=DEVICE)
             z_quantized = self.fsq.dequantize(indices_tensor)
-            return self.decode(z_quantized).detach().cpu().numpy()
+            return self.decode(z_quantized).detach().cpu()
 
     def fit(
         self,
