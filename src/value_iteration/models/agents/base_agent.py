@@ -32,7 +32,7 @@ class BaseAgent(ABC):
     def __init__(self, task: VecEnv | gym.Env) -> None:
         super().__init__()
         self.task = task if isinstance(task, gym.Env) else task.envs[0]
-        self.num_timesteps = 0
+        self.time_steps_observed = 0
 
     def collocate(
         self,
@@ -122,7 +122,7 @@ class BaseAgent(ABC):
             episode_start = False
 
             outcome_tuple = task.step(action)
-            self.num_timesteps += 1
+            self.time_steps_observed += 1
             rollout_buffer.add(obs, action, outcome_tuple)
 
             self.update_rollout_policy(obs, action, outcome_tuple, rollout_buffer)
@@ -198,12 +198,14 @@ class BaseAgent(ABC):
         # alternate between collecting rollouts and batch updates
         n_rollout_steps = self.n_steps if self.n_steps is not None else total_timesteps
 
-        self.num_timesteps = 0
-        while self.num_timesteps < total_timesteps:
+        self.time_steps_observed = 0
+        while self.time_steps_observed < total_timesteps:
             if reset_buffer:
                 self.rollout_buffer.reset_buffer()
 
-            n_rollout_steps = min(n_rollout_steps, total_timesteps - self.num_timesteps)
+            n_rollout_steps = min(
+                n_rollout_steps, total_timesteps - self.time_steps_observed
+            )
 
             if not self.collect_rollouts(
                 n_rollout_steps,
