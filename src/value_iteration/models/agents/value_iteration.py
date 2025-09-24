@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from stable_baselines3.common.callbacks import BaseCallback
 from torch import FloatTensor, Tensor
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
 
 from value_iteration.models.vae import StateVae
@@ -27,7 +28,7 @@ from .utils.tabular_agents import (
 
 class ValueIterationAgentConfig(BaseModel):
     optim_kwargs: Optional[Dict[str, Any]] = None
-    grad_clip: bool = True
+    grad_clip: bool | float = 1.0
     batch_size: int = 64
     gamma: float = 0.99
     n_iter: int = 1000
@@ -38,6 +39,8 @@ class ValueIterationAgentConfig(BaseModel):
     alpha: float = 0.05
     dyna_updates: int = 5
     persistant_optim: bool = False
+    tensorboard_log: Optional[str] = None  # Path to tensorboard log directory
+    log_interval: int = 100  # How often to log metrics
 
 
 class ValueIterationAgent(BaseVaeAgent):
@@ -92,6 +95,16 @@ class ValueIterationAgent(BaseVaeAgent):
 
         self.num_timesteps = 0
         self.value_function = None
+
+        # TensorBoard logging setup
+        self.tensorboard_log = config.tensorboard_log
+        self.log_interval = config.log_interval
+        self.writer = (
+            SummaryWriter(log_dir=config.tensorboard_log)
+            if config.tensorboard_log
+            else None
+        )
+        self._n_updates = 0
 
     def _init_state(self):
         return None
@@ -176,11 +189,17 @@ class ValueIterationAgent(BaseVaeAgent):
         self.policy.maybe_init_q_values(s)
         self.policy.maybe_init_q_values(sp)
 
-        q_s_a = self.policy.q_values[s][a]
+        old_q_s_a = self.policy.q_values[s][a]
         V_sp = max(self.policy.q_values[sp].values())
 
-        q_s_a += self.alpha * (r + self.gamma * V_sp - q_s_a)
-        self.policy.q_values[s][a] = q_s_a
+        td_error = r + self.gamma * V_sp - old_q_s_a
+        new_q_s_a = old_q_s_a + self.alpha * td_error
+        self.policy.q_values[s][a] = new_q_s_a
+
+        # Log Q-value update metrics (periodically to avoid too much logging)
+        if self.writer is not None and self.num_timesteps % self.log_interval == 0:
+            self.writer.add_scalar("q_learning/td_error", td_error, self.num_timesteps)
+            self.writer.add_scalar("q_learning/reward", r, self.num_timesteps)
 
     def get_state_values(self) -> torch.Tensor:
         return self.policy.get_value_function()
@@ -204,28 +223,18 @@ class ValueIterationAgent(BaseVaeAgent):
         else:
             optim = self.optim
 
-        if progress_bar:
-            iterator = trange(self.n_epochs, desc="Vae Epochs")
-        else:
-            iterator = range(self.n_epochs)
+        train_loss, test_loss = self.state_inference_model.fit(
+            self.n_epochs,
+            train_dataloader=dataloader,
+            optim=optim,
+            grad_clip=self.grad_clip,
+        )
 
-        for _ in iterator:
-            self.state_inference_model.train()
-
-            for x in dataloader:
-
-                optim.zero_grad()
-                loss = self.state_inference_model.loss(x)
-                loss.backward()
-
-                if self.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.state_inference_model.parameters(), self.grad_clip
-                    )
-
-                optim.step()
-            self.state_inference_model.prep_next_batch()
-        self.state_inference_model.eval()
+        # Log VAE training metrics
+        if self.writer is not None:
+            self.writer.add_scalar("vae/train_loss", train_loss[-1], self._n_updates)
+            if test_loss is not None:
+                self.writer.add_scalar("vae/test_loss", test_loss[-1], self._n_updates)
 
     def update_from_batch(self, buffer: BaseBuffer, progress_bar: bool = False):
         self.train_vae(buffer, progress_bar=progress_bar)
@@ -267,6 +276,53 @@ class ValueIterationAgent(BaseVaeAgent):
         )
         self.value_function = value_function
 
+        # Log value iteration metrics
+        if self.writer is not None:
+            # Log value function statistics
+            if value_function is not None:
+                self.writer.add_scalar(
+                    "value_iteration/mean_value",
+                    np.mean(value_function),
+                    self._n_updates,
+                )
+                self.writer.add_scalar(
+                    "value_iteration/max_value", np.max(value_function), self._n_updates
+                )
+                self.writer.add_scalar(
+                    "value_iteration/min_value", np.min(value_function), self._n_updates
+                )
+
+            # Log Q-values statistics
+            if hasattr(self.policy, "q_values") and self.policy.q_values:
+                all_q_values = [
+                    q
+                    for state_q in self.policy.q_values.values()
+                    for q in state_q.values()
+                ]
+                if all_q_values:
+                    self.writer.add_scalar(
+                        "value_iteration/mean_q_value",
+                        np.mean(all_q_values),
+                        self._n_updates,
+                    )
+                    self.writer.add_scalar(
+                        "value_iteration/max_q_value",
+                        np.max(all_q_values),
+                        self._n_updates,
+                    )
+                    self.writer.add_scalar(
+                        "value_iteration/min_q_value",
+                        np.min(all_q_values),
+                        self._n_updates,
+                    )
+                    self.writer.add_scalar(
+                        "value_iteration/num_states",
+                        len(self.policy.q_values),
+                        self._n_updates,
+                    )
+
+        self._n_updates += 1
+
     def learn(
         self,
         total_timesteps: int,
@@ -277,7 +333,15 @@ class ValueIterationAgent(BaseVaeAgent):
         buffer_class: str | None = None,
         buffer_kwargs: Dict[str, Any] | None = None,
     ):
-        super().learn(
+        # Log hyperparameters at the start of training
+        if self.writer is not None:
+            self.writer.add_scalar("hyperparameters/gamma", self.gamma, 0)
+            self.writer.add_scalar("hyperparameters/alpha", self.alpha, 0)
+            self.writer.add_scalar("hyperparameters/epsilon", self.policy.epsilon, 0)
+            self.writer.add_scalar("hyperparameters/n_iter", self.n_iter, 0)
+            self.writer.add_scalar("hyperparameters/batch_size", self.batch_size, 0)
+
+        result = super().learn(
             total_timesteps=total_timesteps,
             progress_bar=progress_bar,
             reset_buffer=reset_buffer,
@@ -287,7 +351,25 @@ class ValueIterationAgent(BaseVaeAgent):
             buffer_kwargs=buffer_kwargs,
         )
 
+        # Log total timesteps at the end of training
+        if self.writer is not None:
+            self.writer.add_scalar(
+                "training/total_timesteps", self.num_timesteps, self._n_updates
+            )
+
+        return result
+
     def get_graph_laplacian(
         self, normalized: bool = True
     ) -> tuple[np.ndarray, Dict[Hashable, int]]:
         return self.transition_estimator.get_graph_laplacian(normalized=normalized)
+
+    def close(self):
+        """Close the TensorBoard writer."""
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None
+
+    def __del__(self):
+        """Ensure TensorBoard writer is closed when the object is destroyed."""
+        self.close()
