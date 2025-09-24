@@ -10,7 +10,6 @@ from torch import FloatTensor, Tensor
 from torch.utils.data import DataLoader
 from tqdm import trange
 
-from value_iteration.models import vae
 from value_iteration.models.vae import StateVae
 from value_iteration.task.utils import ActType
 from value_iteration.utils.pytorch_utils import DEVICE, convert_8bit_to_float
@@ -91,16 +90,8 @@ class ValueIterationAgent(BaseVaeAgent):
 
         assert config.epsilon >= 0 and config.epsilon < 1.0
 
-        self.hash_vector = np.array(
-            [
-                self.state_inference_model.z_dim**ii
-                for ii in range(self.state_inference_model.z_layers)
-            ]
-        )
-
         self.num_timesteps = 0
         self.value_function = None
-        self.n_dyna_updates = config.dyna_updates
 
     def _init_state(self):
         return None
@@ -117,47 +108,47 @@ class ValueIterationAgent(BaseVaeAgent):
         obs = obs if isinstance(obs, Tensor) else torch.tensor(obs)
         obs_ = self._preprocess_obs(obs)
         with torch.no_grad():
-            z = self.state_inference_model.get_state(obs_)
-        return z.dot(self.hash_vector)
+            return self.state_inference_model.get_states(obs_)
 
-    def update_rollout_policy(
-        self,
-        obs: int,
-        a: int,
-        outcome_tuple,
-        rollout_buffer: BaseBuffer,
-    ) -> None:
-        # the rollout policy is a DYNA variant
-        # dyna updates (note: this assumes a deterministic enviornment,
-        # and this code differes from dyna as we are only using resampled
-        # values and not seperately sampling rewards and sucessor states
+    ## Depricated
+    # def update_rollout_policy(
+    #     self,
+    #     obs: int,
+    #     a: int,
+    #     outcome_tuple,
+    #     rollout_buffer: BaseBuffer,
+    # ) -> None:
+    #     # the rollout policy is a DYNA variant
+    #     # dyna updates (note: this assumes a deterministic enviornment,
+    #     # and this code differes from dyna as we are only using resampled
+    #     # values and not seperately sampling rewards and sucessor states
 
-        # pass the obseration tuple through the state-inference network
-        next_obs, r, _, _, _ = outcome_tuple
-        s = self.get_states(obs)[0]
-        sp = self.get_states(next_obs)[0]
+    #     # pass the obseration tuple through the state-inference network
+    #     next_obs, r, _, _, _ = outcome_tuple
+    #     s = self.get_states(obs)[0]
+    #     sp = self.get_states(next_obs)[0]
 
-        # update the model
-        self.transition_estimator.update(s, a, sp)
-        self.reward_estimator.update(sp, r)
+    #     # update the model
+    #     self.transition_estimator.update(s, a, sp)
+    #     self.reward_estimator.update(sp, r)
 
-        # update q-values
-        self.update_qvalues(s, a, r, sp)
+    #     # update q-values
+    #     self.update_qvalues(s, a, r, sp)
 
-        # resampling (dyna) updates
-        for _ in range(min(len(rollout_buffer), self.n_dyna_updates)):
-            # sample observations and actions with replacement
-            idx = random.randint(0, len(rollout_buffer) - 1)
+    #     # resampling (dyna) updates
+    #     for _ in range(min(len(rollout_buffer), self.n_dyna_updates)):
+    #         # sample observations and actions with replacement
+    #         idx = random.randint(0, len(rollout_buffer) - 1)
 
-            obs, a, _, _ = rollout_buffer.get_obs(idx)
+    #         obs, a, _, _ = rollout_buffer.get_obs(idx)
 
-            s = self.get_states(obs)[0]
+    #         s = self.get_states(obs)[0]
 
-            # draw r, sp from the model
-            sp = self.transition_estimator.sample(s, a)
-            r = self.reward_estimator.sample(sp)
+    #         # draw r, sp from the model
+    #         sp = self.transition_estimator.sample(s, a)
+    #         r = self.reward_estimator.sample(sp)
 
-            self.update_qvalues(s, a, r, sp)
+    #         self.update_qvalues(s, a, r, sp)
 
     def get_policy(self, obs: Tensor):
         s = self.get_states(obs)

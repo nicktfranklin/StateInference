@@ -33,6 +33,7 @@ class BaseAgent(ABC):
         super().__init__()
         self.task = task if isinstance(task, gym.Env) else task.envs[0]
         self.time_steps_observed = 0
+        self.n_steps = 0  # overwritten by child methods
 
     def collocate(
         self,
